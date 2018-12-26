@@ -1,17 +1,37 @@
 // Written in the D programming language
 
 /++
+
+$(SCRIPT inhibitQuickIndex = 1;)
+$(BOOKTABLE,
+$(TR $(TH Category) $(TH Functions))
+$(TR $(TD Time zones) $(TD
+    $(LREF TimeZone)
+    $(LREF UTC)
+    $(LREF LocalTime)
+    $(LREF PosixTimeZone)
+    $(LREF WindowsTimeZone)
+    $(LREF SimpleTimeZone)
+))
+$(TR $(TD Utilities) $(TD
+    $(LREF clearTZEnvVar)
+    $(LREF parseTZConversions)
+    $(LREF setTZEnvVar)
+    $(LREF TZConversions)
+))
+)
+
     License:   $(HTTP www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
-    Authors:   Jonathan M Davis
-    Source:    $(PHOBOSSRC std/datetime/_timezone.d)
+    Authors:   $(HTTP jmdavisprog.com, Jonathan M Davis)
+    Source:    $(PHOBOSSRC std/datetime/timezone.d)
 +/
 module std.datetime.timezone;
 
-import core.time;
-import std.datetime.date;
-import std.datetime.systime;
-import std.exception : enforce;
-import std.range.primitives;
+// Note: reconsider using specific imports below after
+// https://issues.dlang.org/show_bug.cgi?id=17630 has been fixed
+import core.time;// : abs, convert, dur, Duration, hours, minutes;
+import std.datetime.systime;// : Clock, stdTimeToUnixTime, SysTime;
+import std.range.primitives;// : back, front, empty, popFront;
 import std.traits : isIntegral, isSomeString, Unqual;
 
 version (Windows)
@@ -45,8 +65,13 @@ abstract class TimeZone
 public:
 
     /++
-        The name of the time zone per the TZ Database. This is the name used to
-        get a $(LREF TimeZone) by name with $(D TimeZone.getTimeZone).
+        The name of the time zone. Exactly how the time zone name is formatted
+        depends on the derived class. In the case of $(LREF PosixTimeZone), it's
+        the TZ Database name, whereas with $(LREF WindowsTimeZone), it's the
+        name that Windows chose to give the registry key for that time zone
+        (typically the name that they give $(LREF stdTime) if the OS is in
+        English). For other time zone types, what it is depends on how they're
+        implemented.
 
         See_Also:
             $(HTTP en.wikipedia.org/wiki/Tz_database, Wikipedia entry on TZ
@@ -89,7 +114,7 @@ public:
     /++
         Whether this time zone has Daylight Savings Time at any point in time.
         Note that for some time zone types it may not have DST for current dates
-        but will still return true for $(D hasDST) because the time zone did at
+        but will still return true for `hasDST` because the time zone did at
         some point have DST.
       +/
     @property abstract bool hasDST() @safe const nothrow;
@@ -140,39 +165,6 @@ public:
     Duration utcOffsetAt(long stdTime) @safe const nothrow
     {
         return dur!"hnsecs"(utcToTZ(stdTime) - stdTime);
-    }
-
-    // Explicitly undocumented. It will be removed in June 2018. @@@DEPRECATED_2018-07@@@
-    deprecated("Use PosixTimeZone.getTimeZone or WindowsTimeZone.getTimeZone instead")
-    static immutable(TimeZone) getTimeZone(string name) @safe
-    {
-        version (Posix)
-            return PosixTimeZone.getTimeZone(name);
-        else version (Windows)
-        {
-            import std.format : format;
-            auto windowsTZName = tzDatabaseNameToWindowsTZName(name);
-            if (windowsTZName != null)
-            {
-                try
-                    return WindowsTimeZone.getTimeZone(windowsTZName);
-                catch (DateTimeException dte)
-                {
-                    auto oldName = _getOldName(windowsTZName);
-                    if (oldName != null)
-                        return WindowsTimeZone.getTimeZone(oldName);
-                    throw dte;
-                }
-            }
-            else
-                throw new DateTimeException(format("%s does not have an equivalent Windows time zone.", name));
-        }
-    }
-
-    ///
-    deprecated @safe unittest
-    {
-        auto tz = TimeZone.getTimeZone("America/Los_Angeles");
     }
 
     // The purpose of this is to handle the case where a Windows time zone is
@@ -237,6 +229,7 @@ public:
             //assert(tz.dstName == dstName);  //Locale-dependent
             assert(tz.hasDST == hasDST);
 
+            import std.datetime.date : DateTime;
             immutable stdDate = DateTime(2010, north ? 1 : 7, 1, 6, 0, 0);
             immutable dstDate = DateTime(2010, north ? 7 : 1, 1, 6, 0, 0);
             auto std = SysTime(stdDate, tz);
@@ -257,11 +250,14 @@ public:
             {
                 setTZEnvVar(tzName);
 
-                static void testTM(in SysTime st)
+                static void testTM(scope const SysTime st)
                 {
-                    import core.stdc.time : localtime, tm;
+                    import core.stdc.time : tm;
+                    import core.sys.posix.time : localtime_r;
+
                     time_t unixTime = st.toUnixTime();
-                    tm* osTimeInfo = localtime(&unixTime);
+                    tm osTimeInfo = void;
+                    localtime_r(&unixTime, &osTimeInfo);
                     tm ourTimeInfo = st.toTM();
 
                     assert(ourTimeInfo.tm_sec == osTimeInfo.tm_sec);
@@ -316,6 +312,7 @@ public:
             return tz;
         }
 
+        import std.datetime.date : DateTime;
         auto dstSwitches = [/+America/Los_Angeles+/ tuple(DateTime(2012, 3, 11),  DateTime(2012, 11, 4), 2, 2),
                             /+America/New_York+/    tuple(DateTime(2012, 3, 11),  DateTime(2012, 11, 4), 2, 2),
                             ///+America/Santiago+/    tuple(DateTime(2011, 8, 21),  DateTime(2011, 5, 8), 0, 0),
@@ -323,12 +320,15 @@ public:
                             /+Europe/Paris+/        tuple(DateTime(2012, 3, 25),  DateTime(2012, 10, 28), 2, 3),
                             /+Australia/Adelaide+/  tuple(DateTime(2012, 10, 7),  DateTime(2012, 4, 1), 2, 3)];
 
+        import std.datetime.date : DateTimeException;
         version (Posix)
         {
-            version (FreeBSD)      enum utcZone = "Etc/UTC";
-            else version (NetBSD)  enum utcZone = "UTC";
-            else version (linux)   enum utcZone = "UTC";
-            else version (OSX)     enum utcZone = "UTC";
+            version (FreeBSD)            enum utcZone = "Etc/UTC";
+            else version (NetBSD)        enum utcZone = "UTC";
+            else version (DragonFlyBSD)  enum utcZone = "UTC";
+            else version (linux)         enum utcZone = "UTC";
+            else version (OSX)           enum utcZone = "UTC";
+            else version (Solaris)       enum utcZone = "UTC";
             else static assert(0, "The location of the UTC timezone file on this Posix platform must be set.");
 
             auto tzs = [testTZ("America/Los_Angeles", "PST", "PDT", dur!"hours"(-8), dur!"hours"(1)),
@@ -382,6 +382,7 @@ public:
             // a DST switch.
             foreach (hour; -12 .. 13)
             {
+                import std.exception : enforce;
                 auto st = SysTime(dstSwitches[i][0] + dur!"hours"(hour), tz);
                 immutable targetHour = hour < 0 ? hour + 24 : hour;
 
@@ -457,6 +458,7 @@ public:
                                                __FILE__, line);
                     }
 
+                    import std.exception : enforce;
                     enforce((utc + offset).hour == local.hour, msg("1"));
                     enforce((utc + offset + dur!"minutes"(1)).hour == local.hour, msg("2"));
                 }
@@ -485,53 +487,6 @@ public:
                     testOffset2(dstOffset);
             }
         }
-    }
-
-
-    // Explicitly undocumented. It will be removed in June 2018. @@@DEPRECATED_2018-07@@@
-    deprecated("Use PosixTimeZone.getInstalledTZNames or WindowsTimeZone.getInstalledTZNames instead")
-    static string[] getInstalledTZNames(string subName = "") @safe
-    {
-        version (Posix)
-            return PosixTimeZone.getInstalledTZNames(subName);
-        else version (Windows)
-        {
-            import std.algorithm.searching : startsWith;
-            import std.algorithm.sorting : sort;
-            import std.array : appender;
-
-            auto windowsNames = WindowsTimeZone.getInstalledTZNames();
-            auto retval = appender!(string[])();
-
-            foreach (winName; windowsNames)
-            {
-                auto tzName = windowsTZNameToTZDatabaseName(winName);
-                if (tzName !is null && tzName.startsWith(subName))
-                    retval.put(tzName);
-            }
-
-            sort(retval.data);
-            return retval.data;
-        }
-    }
-
-    deprecated @safe unittest
-    {
-        import std.exception : assertNotThrown;
-        import std.stdio : writefln;
-        static void testPZSuccess(string tzName)
-        {
-            scope(failure) writefln("TZName which threw: %s", tzName);
-            TimeZone.getTimeZone(tzName);
-        }
-
-        auto tzNames = getInstalledTZNames();
-        // This was not previously tested, and it's currently failing, so I'm
-        // leaving it commented out until I can sort it out.
-        //assert(equal(tzNames, tzNames.uniq()));
-
-        foreach (tzName; tzNames)
-            assertNotThrown!DateTimeException(testPZSuccess(tzName));
     }
 
 
@@ -587,14 +542,12 @@ public:
     version (StdDdoc)
     {
         /++
-            The name of the time zone per the TZ Database. This is the name used
-            to get a $(LREF TimeZone) by name with $(D TimeZone.getTimeZone).
-
-            Note that this always returns the empty string. This is because time
-            zones cannot be uniquely identified by the attributes given by the
-            OS (such as the $(D stdName) and $(D dstName)), and neither Posix
-            systems nor Windows systems provide an easy way to get the TZ
-            Database name of the local time zone.
+            In principle, this is the name of the local time zone. However,
+            this always returns the empty string. This is because time zones
+            cannot be uniquely identified by the attributes given by the
+            OS (such as the `stdName` and `dstName`), and neither Posix systems
+            nor Windows systems provide an easy way to get the TZ Database name
+            of the local time zone.
 
             See_Also:
                 $(HTTP en.wikipedia.org/wiki/Tz_database, Wikipedia entry on TZ
@@ -749,7 +702,11 @@ public:
 
     @safe unittest
     {
-        assert(LocalTime().dstName !is null);
+        // tzname, called from dstName, isn't set by default for Musl.
+        version (CRuntime_Musl)
+            assert(LocalTime().dstName is null);
+        else
+            assert(LocalTime().dstName !is null);
 
         version (Posix)
         {
@@ -779,7 +736,7 @@ public:
     /++
         Whether this time zone has Daylight Savings Time at any point in time.
         Note that for some time zone types it may not have DST for current
-        dates but will still return true for $(D hasDST) because the time zone
+        dates but will still return true for `hasDST` because the time zone
         did at some point have DST.
       +/
     @property override bool hasDST() @trusted const nothrow
@@ -792,6 +749,7 @@ public:
             {
                 try
                 {
+                    import std.datetime.date : Date;
                     auto currYear = (cast(Date) Clock.currTime()).year;
                     auto janOffset = SysTime(Date(currYear, 1, 4), cast(immutable) this).stdTime -
                                      SysTime(Date(currYear, 1, 4), UTC()).stdTime;
@@ -844,17 +802,23 @@ public:
       +/
     override bool dstInEffect(long stdTime) @trusted const nothrow
     {
-        import core.stdc.time : localtime, tm;
+        import core.stdc.time : tm;
+
         time_t unixTime = stdTimeToUnixTime(stdTime);
 
         version (Posix)
         {
-            tm* timeInfo = localtime(&unixTime);
+            import core.sys.posix.time : localtime_r;
+
+            tm timeInfo = void;
+            localtime_r(&unixTime, &timeInfo);
 
             return cast(bool)(timeInfo.tm_isdst);
         }
         else version (Windows)
         {
+            import core.stdc.time : localtime;
+
             // Apparently Windows isn't smart enough to deal with negative time_t.
             if (unixTime >= 0)
             {
@@ -888,7 +852,7 @@ public:
                       time.
 
         See_Also:
-            $(D TimeZone.utcToTZ)
+            `TimeZone.utcToTZ`
       +/
     override long utcToTZ(long stdTime) @trusted const nothrow
     {
@@ -896,9 +860,11 @@ public:
             return stdTime + convert!("seconds", "hnsecs")(tm_gmtoff(stdTime));
         else version (Posix)
         {
-            import core.stdc.time : localtime, tm;
+            import core.stdc.time : tm;
+            import core.sys.posix.time : localtime_r;
             time_t unixTime = stdTimeToUnixTime(stdTime);
-            tm* timeInfo = localtime(&unixTime);
+            tm timeInfo = void;
+            localtime_r(&unixTime, &timeInfo);
 
             return stdTime + convert!("seconds", "hnsecs")(timeInfo.tm_gmtoff);
         }
@@ -923,7 +889,7 @@ public:
         time to UTC from the appropriate time zone.
 
         See_Also:
-            $(D TimeZone.tzToUTC)
+            `TimeZone.tzToUTC`
 
         Params:
             adjTime = The time in this time zone that needs to be adjusted to
@@ -933,15 +899,17 @@ public:
     {
         version (Posix)
         {
-            import core.stdc.time : localtime, tm;
+            import core.stdc.time : tm;
+            import core.sys.posix.time : localtime_r;
             time_t unixTime = stdTimeToUnixTime(adjTime);
 
             immutable past = unixTime - cast(time_t) convert!("days", "seconds")(1);
-            tm* timeInfo = localtime(past < unixTime ? &past : &unixTime);
+            tm timeInfo = void;
+            localtime_r(past < unixTime ? &past : &unixTime, &timeInfo);
             immutable pastOffset = timeInfo.tm_gmtoff;
 
             immutable future = unixTime + cast(time_t) convert!("days", "seconds")(1);
-            timeInfo = localtime(future > unixTime ? &future : &unixTime);
+            localtime_r(future > unixTime ? &future : &unixTime, &timeInfo);
             immutable futureOffset = timeInfo.tm_gmtoff;
 
             if (pastOffset == futureOffset)
@@ -951,7 +919,7 @@ public:
                 unixTime -= cast(time_t) convert!("hours", "seconds")(1);
 
             unixTime -= pastOffset;
-            timeInfo = localtime(&unixTime);
+            localtime_r(&unixTime, &timeInfo);
 
             return adjTime - convert!("seconds", "hnsecs")(timeInfo.tm_gmtoff);
         }
@@ -980,6 +948,7 @@ public:
         {
             scope(exit) clearTZEnvVar();
 
+            import std.datetime.date : DateTime;
             auto tzInfos = [tuple("America/Los_Angeles", DateTime(2012, 3, 11), DateTime(2012, 11, 4), 2, 2),
                             tuple("America/New_York",    DateTime(2012, 3, 11), DateTime(2012, 11, 4), 2, 2),
                             //tuple("America/Santiago",    DateTime(2011, 8, 21), DateTime(2011, 5, 8), 0, 0),
@@ -990,6 +959,7 @@ public:
 
             foreach (i; 0 .. tzInfos.length)
             {
+                import std.exception : enforce;
                 auto tzName = tzInfos[i][0];
                 setTZEnvVar(tzName);
                 immutable spring = tzInfos[i][3];
@@ -1135,13 +1105,14 @@ private:
     {
         long tm_gmtoff(long stdTime) @trusted const nothrow
         {
-            import core.stdc.time : localtime, gmtime, tm;
+            import core.stdc.time : tm;
+            import core.sys.posix.time : localtime_r, gmtime_r;
 
             time_t unixTime = stdTimeToUnixTime(stdTime);
-            tm* buf = localtime(&unixTime);
-            tm timeInfo = *buf;
-            buf = gmtime(&unixTime);
-            tm timeInfoGmt = *buf;
+            tm timeInfo = void;
+            localtime_r(&unixTime, &timeInfo);
+            tm timeInfoGmt = void;
+            gmtime_r(&unixTime, &timeInfoGmt);
 
             return timeInfo.tm_sec - timeInfoGmt.tm_sec +
                    convert!("minutes", "seconds")(timeInfo.tm_min - timeInfoGmt.tm_min) +
@@ -1159,7 +1130,7 @@ final class UTC : TimeZone
 public:
 
     /++
-        $(D UTC) is a singleton class. $(D UTC) returns its only instance.
+        `UTC` is a singleton class. `UTC` returns its only instance.
       +/
     static immutable(UTC) opCall() @safe pure nothrow
     {
@@ -1193,7 +1164,7 @@ public:
                       time.
 
         See_Also:
-            $(D TimeZone.utcToTZ)
+            `TimeZone.utcToTZ`
       +/
     override long utcToTZ(long stdTime) @safe const nothrow
     {
@@ -1209,6 +1180,7 @@ public:
             scope(exit) clearTZEnvVar();
 
             setTZEnvVar("UTC");
+            import std.datetime.date : Date;
             auto std = SysTime(Date(2010, 1, 1));
             auto dst = SysTime(Date(2010, 7, 1));
             assert(UTC().utcToTZ(std.stdTime) == std.stdTime);
@@ -1221,7 +1193,7 @@ public:
         Returns the given hnsecs without changing them at all.
 
         See_Also:
-            $(D TimeZone.tzToUTC)
+            `TimeZone.tzToUTC`
 
         Params:
             adjTime = The time in this time zone that needs to be adjusted to
@@ -1241,6 +1213,7 @@ public:
             scope(exit) clearTZEnvVar();
 
             setTZEnvVar("UTC");
+            import std.datetime.date : Date;
             auto std = SysTime(Date(2010, 1, 1));
             auto dst = SysTime(Date(2010, 7, 1));
             assert(UTC().tzToUTC(std.stdTime) == std.stdTime);
@@ -1279,10 +1252,10 @@ private:
     UTC but no DST.
 
     It's primarily used as the time zone in the result of
-    $(REF SysTime,std,datetime,systime)'s $(D fromISOString),
-    $(D fromISOExtString), and $(D fromSimpleString).
+    $(REF SysTime,std,datetime,systime)'s `fromISOString`,
+    `fromISOExtString`, and `fromSimpleString`.
 
-    $(D name) and $(D dstName) are always the empty string since this time zone
+    `name` and `dstName` are always the empty string since this time zone
     has no DST, and while it may be meant to represent a time zone which is in
     the TZ Database, obviously it's not likely to be following the exact rules
     of any of the time zones in the TZ Database, so it makes no sense to set it.
@@ -1380,11 +1353,13 @@ public:
         Params:
             utcOffset = This time zone's offset from UTC with west of UTC being
                         negative (it is added to UTC to get the adjusted time).
-            stdName   = The $(D stdName) for this time zone.
+            stdName   = The `stdName` for this time zone.
       +/
     this(Duration utcOffset, string stdName = "") @safe immutable pure
     {
         // FIXME This probably needs to be changed to something like (-12 - 13).
+        import std.datetime.date : DateTimeException;
+        import std.exception : enforce;
         enforce!DateTimeException(abs(utcOffset) < dur!"minutes"(1440),
                                     "Offset from UTC must be within range (-24:00 - 24:00).");
         super("", stdName, "");
@@ -1424,14 +1399,32 @@ package:
       +/
     static string toISOString(Duration utcOffset) @safe pure
     {
-        import std.format : format;
+        import std.array : appender;
+        auto w = appender!string();
+        w.reserve(5);
+        toISOString(w, utcOffset);
+        return w.data;
+    }
+
+    // ditto
+    static void toISOString(W)(ref W writer, Duration utcOffset)
+    if (isOutputRange!(W, char))
+    {
+        import std.datetime.date : DateTimeException;
+        import std.exception : enforce;
+        import std.format : formattedWrite;
         immutable absOffset = abs(utcOffset);
         enforce!DateTimeException(absOffset < dur!"minutes"(1440),
                                   "Offset from UTC must be within range (-24:00 - 24:00).");
         int hours;
         int minutes;
         absOffset.split!("hours", "minutes")(hours, minutes);
-        return format(utcOffset < Duration.zero ? "-%02d%02d" : "+%02d%02d", hours, minutes);
+        formattedWrite(
+            writer,
+            utcOffset < Duration.zero ? "-%02d%02d" : "+%02d%02d",
+            hours,
+            minutes
+        );
     }
 
     @safe unittest
@@ -1441,6 +1434,7 @@ package:
             return SimpleTimeZone.toISOString(offset);
         }
 
+        import std.datetime.date : DateTimeException;
         assertThrown!DateTimeException(testSTZInvalid(dur!"minutes"(1440)));
         assertThrown!DateTimeException(testSTZInvalid(dur!"minutes"(-1440)));
 
@@ -1476,7 +1470,19 @@ package:
       +/
     static string toISOExtString(Duration utcOffset) @safe pure
     {
-        import std.format : format;
+        import std.array : appender;
+        auto w = appender!string();
+        w.reserve(6);
+        toISOExtString(w, utcOffset);
+        return w.data;
+    }
+
+    // ditto
+    static void toISOExtString(W)(ref W writer, Duration utcOffset)
+    {
+        import std.datetime.date : DateTimeException;
+        import std.format : formattedWrite;
+        import std.exception : enforce;
 
         immutable absOffset = abs(utcOffset);
         enforce!DateTimeException(absOffset < dur!"minutes"(1440),
@@ -1484,7 +1490,12 @@ package:
         int hours;
         int minutes;
         absOffset.split!("hours", "minutes")(hours, minutes);
-        return format(utcOffset < Duration.zero ? "-%02d:%02d" : "+%02d:%02d", hours, minutes);
+        formattedWrite(
+            writer,
+            utcOffset < Duration.zero ? "-%02d:%02d" : "+%02d:%02d",
+            hours,
+            minutes
+        );
     }
 
     @safe unittest
@@ -1494,6 +1505,7 @@ package:
             return SimpleTimeZone.toISOExtString(offset);
         }
 
+        import std.datetime.date : DateTimeException;
         assertThrown!DateTimeException(testSTZInvalid(dur!"minutes"(1440)));
         assertThrown!DateTimeException(testSTZInvalid(dur!"minutes"(-1440)));
 
@@ -1531,34 +1543,43 @@ package:
     static immutable(SimpleTimeZone) fromISOString(S)(S isoString) @safe pure
         if (isSomeString!S)
     {
-        import std.algorithm.searching : startsWith, countUntil, all;
-        import std.ascii : isDigit;
-        import std.conv : to;
-        import std.format : format;
+        import std.algorithm.searching : startsWith;
+        import std.conv : text, to, ConvException;
+        import std.datetime.date : DateTimeException;
+        import std.exception : enforce;
 
-        auto dstr = to!dstring(isoString);
+        auto whichSign = isoString.startsWith('-', '+');
+        enforce!DateTimeException(whichSign > 0, text("Invalid ISO String ", isoString));
 
-        enforce!DateTimeException(dstr.startsWith('-', '+'), "Invalid ISO String");
-
-        auto sign = dstr.startsWith('-') ? -1 : 1;
-
-        dstr.popFront();
-        enforce!DateTimeException(all!isDigit(dstr), format("Invalid ISO String: %s", dstr));
-
+        isoString = isoString[1 .. $];
+        auto sign = whichSign == 1 ? -1 : 1;
         int hours;
         int minutes;
 
-        if (dstr.length == 2)
-            hours = to!int(dstr);
-        else if (dstr.length == 4)
+        try
         {
-            hours = to!int(dstr[0 .. 2]);
-            minutes = to!int(dstr[2 .. 4]);
+            // cast to int from uint is used because it checks for
+            // non digits without extra loops
+            if (isoString.length == 2)
+            {
+                hours = cast(int) to!uint(isoString);
+            }
+            else if (isoString.length == 4)
+            {
+                hours = cast(int) to!uint(isoString[0 .. 2]);
+                minutes = cast(int) to!uint(isoString[2 .. 4]);
+            }
+            else
+            {
+                throw new DateTimeException(text("Invalid ISO String ", isoString));
+            }
         }
-        else
-            throw new DateTimeException(format("Invalid ISO String: %s", dstr));
+        catch (ConvException)
+        {
+            throw new DateTimeException(text("Invalid ISO String ", isoString));
+        }
 
-        enforce!DateTimeException(hours < 24 && minutes < 60, format("Invalid ISO String: %s", dstr));
+        enforce!DateTimeException(hours < 24 && minutes < 60, text("Invalid ISO String ", isoString));
 
         return new immutable SimpleTimeZone(sign * (dur!"hours"(hours) + dur!"minutes"(minutes)));
     }
@@ -1582,6 +1603,7 @@ package:
                        "-ab:cd", "+abcd", "-0Z:00", "-Z", "-00Z",
                        "01:00", "12:00", "23:59"])
         {
+            import std.datetime.date : DateTimeException;
             assertThrown!DateTimeException(SimpleTimeZone.fromISOString(str), format("[%s]", str));
         }
 
@@ -1628,7 +1650,7 @@ package:
         import core.exception : AssertError;
         import std.format : format;
 
-        static void test(in string isoString, int expectedOffset, size_t line = __LINE__)
+        static void test(scope const string isoString, int expectedOffset, size_t line = __LINE__)
         {
             auto stz = SimpleTimeZone.fromISOExtString(isoString);
             if (stz.utcOffset != dur!"minutes"(expectedOffset))
@@ -1675,41 +1697,51 @@ package:
     static immutable(SimpleTimeZone) fromISOExtString(S)(S isoExtString) @safe pure
         if (isSomeString!S)
     {
-        import std.algorithm.searching : startsWith, countUntil, all;
-        import std.ascii : isDigit;
-        import std.conv : to;
+        import std.algorithm.searching : startsWith;
+        import std.conv : ConvException, to;
+        import std.datetime.date : DateTimeException;
+        import std.exception : enforce;
         import std.format : format;
+        import std.string : indexOf;
 
-        auto dstr = to!dstring(isoExtString);
+        auto whichSign = isoExtString.startsWith('-', '+');
+        enforce!DateTimeException(whichSign > 0, format("Invalid ISO String: %s", isoExtString));
+        auto sign = whichSign == 1 ? -1 : 1;
 
-        enforce!DateTimeException(dstr.startsWith('-', '+'), "Invalid ISO String");
+        isoExtString = isoExtString[1 .. $];
+        enforce!DateTimeException(!isoExtString.empty, format("Invalid ISO String: %s", isoExtString));
 
-        auto sign = dstr.startsWith('-') ? -1 : 1;
-
-        dstr.popFront();
-        enforce!DateTimeException(!dstr.empty, "Invalid ISO String");
-
-        immutable colon = dstr.countUntil(':');
-
-        dstring hoursStr;
-        dstring minutesStr;
+        immutable colon = isoExtString.indexOf(':');
+        S hoursStr;
+        S minutesStr;
+        int hours, minutes;
 
         if (colon != -1)
         {
-            hoursStr = dstr[0 .. colon];
-            minutesStr = dstr[colon + 1 .. $];
-            enforce!DateTimeException(minutesStr.length == 2, format("Invalid ISO String: %s", dstr));
+            hoursStr = isoExtString[0 .. colon];
+            minutesStr = isoExtString[colon + 1 .. $];
+            enforce!DateTimeException(minutesStr.length == 2, format("Invalid ISO String: %s", isoExtString));
         }
         else
-            hoursStr = dstr;
+        {
+            hoursStr = isoExtString;
+        }
 
-        enforce!DateTimeException(hoursStr.length == 2, format("Invalid ISO String: %s", dstr));
-        enforce!DateTimeException(all!isDigit(hoursStr), format("Invalid ISO String: %s", dstr));
-        enforce!DateTimeException(all!isDigit(minutesStr), format("Invalid ISO String: %s", dstr));
+        enforce!DateTimeException(hoursStr.length == 2, format("Invalid ISO String: %s", isoExtString));
 
-        immutable hours = to!int(hoursStr);
-        immutable minutes = minutesStr.empty ? 0 : to!int(minutesStr);
-        enforce!DateTimeException(hours < 24 && minutes < 60, format("Invalid ISO String: %s", dstr));
+        try
+        {
+            // cast to int from uint is used because it checks for
+            // non digits without extra loops
+            hours = cast(int) to!uint(hoursStr);
+            minutes = cast(int) (minutesStr.empty ? 0 : to!uint(minutesStr));
+        }
+        catch (ConvException)
+        {
+            throw new DateTimeException(format("Invalid ISO String: %s", isoExtString));
+        }
+
+        enforce!DateTimeException(hours < 24 && minutes < 60, format("Invalid ISO String: %s", isoExtString));
 
         return new immutable SimpleTimeZone(sign * (dur!"hours"(hours) + dur!"minutes"(minutes)));
     }
@@ -1733,6 +1765,7 @@ package:
                        "-ab:cd", "abcd", "-0Z:00", "-Z", "-00Z",
                        "0100", "1200", "2359"])
         {
+            import std.datetime.date : DateTimeException;
             assertThrown!DateTimeException(SimpleTimeZone.fromISOExtString(str), format("[%s]", str));
         }
 
@@ -1779,7 +1812,7 @@ package:
         import core.exception : AssertError;
         import std.format : format;
 
-        static void test(in string isoExtString, int expectedOffset, size_t line = __LINE__)
+        static void test(scope const string isoExtString, int expectedOffset, size_t line = __LINE__)
         {
             auto stz = SimpleTimeZone.fromISOExtString(isoExtString);
             if (stz.utcOffset != dur!"minutes"(expectedOffset))
@@ -1823,21 +1856,19 @@ private:
     Represents a time zone from a TZ Database time zone file. Files from the TZ
     Database are how Posix systems hold their time zone information.
     Unfortunately, Windows does not use the TZ Database. To use the TZ Database,
-    use $(D PosixTimeZone) (which reads its information from the TZ Database
+    use `PosixTimeZone` (which reads its information from the TZ Database
     files on disk) on Windows by providing the TZ Database files and telling
-    $(D PosixTimeZone.getTimeZone) where the directory holding them is.
+    `PosixTimeZone.getTimeZone` where the directory holding them is.
 
-    To get a $(D PosixTimeZone), either call $(D PosixTimeZone.getTimeZone)
-    (which allows specifying the location the time zone files) or call
-    $(D TimeZone.getTimeZone) (which will give a $(D PosixTimeZone) on Posix
-    systems and a $(LREF WindowsTimeZone) on Windows systems).
+    To get a `PosixTimeZone`, call `PosixTimeZone.getTimeZone`
+    (which allows specifying the location the time zone files).
 
     Note:
         Unless your system's local time zone deals with leap seconds (which is
         highly unlikely), then the only way to get a time zone which
-        takes leap seconds into account is to use $(D PosixTimeZone) with a
+        takes leap seconds into account is to use `PosixTimeZone` with a
         time zone whose name starts with "right/". Those time zone files do
-        include leap seconds, and $(D PosixTimeZone) will take them into account
+        include leap seconds, and `PosixTimeZone` will take them into account
         (though posix systems which use a "right/" time zone as their local time
         zone will $(I not) take leap seconds into account even though they're
         in the file).
@@ -1861,7 +1892,7 @@ public:
     /++
         Whether this time zone has Daylight Savings Time at any point in time.
         Note that for some time zone types it may not have DST for current
-        dates but will still return true for $(D hasDST) because the time zone
+        dates but will still return true for `hasDST` because the time zone
         did at some point have DST.
       +/
     @property override bool hasDST() @safe const nothrow
@@ -1966,24 +1997,37 @@ public:
     }
 
 
-    version (Android)
+    version (StdDdoc)
     {
-        // Android concatenates all time zone data into a single file and stores it here.
+        /++
+            The default directory where the TZ Database files are stored. It's
+            empty for Windows, since Windows doesn't have them. You can also use
+            the TZDatabaseDir version to pass an arbitrary path at compile-time,
+            rather than hard-coding it here. Android concatenates all time zone
+            data into a single file called tzdata and stores it in the directory
+            below.
+          +/
+        enum defaultTZDatabaseDir = "";
+    }
+    else version (TZDatabaseDir)
+    {
+        import std.string : strip;
+        enum defaultTZDatabaseDir = strip(import("TZDatabaseDirFile"));
+    }
+    else version (Android)
+    {
         enum defaultTZDatabaseDir = "/system/usr/share/zoneinfo/";
+    }
+    else version (Solaris)
+    {
+        enum defaultTZDatabaseDir = "/usr/share/lib/zoneinfo/";
     }
     else version (Posix)
     {
-        /++
-            The default directory where the TZ Database files are. It's empty
-            for Windows, since Windows doesn't have them.
-          +/
         enum defaultTZDatabaseDir = "/usr/share/zoneinfo/";
     }
     else version (Windows)
     {
-        /++ The default directory where the TZ Database files are. It's empty
-            for Windows, since Windows doesn't have them.
-          +/
         enum defaultTZDatabaseDir = "";
     }
 
@@ -2009,7 +2053,7 @@ public:
 
         Throws:
             $(REF DateTimeException,std,datetime,date) if the given time zone
-            could not be found or $(D FileException) if the TZ Database file
+            could not be found or `FileException` if the TZ Database file
             could not be opened.
       +/
     // TODO make it possible for tzDatabaseDir to be gzipped tar file rather than an uncompressed
@@ -2018,6 +2062,8 @@ public:
     {
         import std.algorithm.sorting : sort;
         import std.conv : to;
+        import std.datetime.date : DateTimeException;
+        import std.exception : enforce;
         import std.format : format;
         import std.path : asNormalizedPath, chainPath;
         import std.range : retro;
@@ -2044,6 +2090,7 @@ public:
         version (Android) tzFile.seek(*tzfileOffset);
         immutable gmtZone = name.representation().canFind("GMT");
 
+        import std.datetime.date : DateTimeException;
         try
         {
             _enforceValidTZFile(readVal!(char[])(tzFile, 4) == "TZif");
@@ -2360,12 +2407,13 @@ public:
                             located.
 
         Throws:
-            $(D FileException) if it fails to read from disk.
+            `FileException` if it fails to read from disk.
       +/
     static string[] getInstalledTZNames(string subName = "", string tzDatabaseDir = defaultTZDatabaseDir) @trusted
     {
         import std.algorithm.sorting : sort;
         import std.array : appender;
+        import std.exception : enforce;
         import std.format : format;
 
         version (Posix)
@@ -2377,6 +2425,7 @@ public:
             subName = replace(strip(subName), "/", dirSeparator);
         }
 
+        import std.datetime.date : DateTimeException;
         enforce(tzDatabaseDir.exists(), new DateTimeException(format("Directory %s does not exist.", tzDatabaseDir)));
         enforce(tzDatabaseDir.isDir, new DateTimeException(format("%s is not a directory.", tzDatabaseDir)));
 
@@ -2390,6 +2439,7 @@ public:
         }
         else
         {
+            import std.path : baseName;
             foreach (DirEntry de; dirEntries(tzDatabaseDir, SpanMode.depth))
             {
                 if (de.isFile)
@@ -2398,7 +2448,7 @@ public:
 
                     if (!tzName.extension().empty ||
                         !tzName.startsWith(subName) ||
-                        tzName == "leapseconds" ||
+                        baseName(tzName) == "leapseconds" ||
                         tzName == "+VERSION")
                     {
                         continue;
@@ -2434,6 +2484,7 @@ public:
 
         auto tzNames = getInstalledTZNames();
 
+        import std.datetime.date : DateTimeException;
         foreach (tzName; tzNames)
             assertNotThrown!DateTimeException(testPTZSuccess(tzName));
 
@@ -2460,7 +2511,7 @@ private:
 
     /+
         Holds information on when a time transition occures (usually a
-        transition to or from DST) as well as a pointer to the $(D TTInfo) which
+        transition to or from DST) as well as a pointer to the `TTInfo` which
         holds information on the utc offset past the transition.
       +/
     struct Transition
@@ -2497,7 +2548,7 @@ private:
       +/
     struct TTInfo
     {
-        this(in TempTTInfo tempTTInfo, string abbrev) @safe immutable pure
+        this(scope const TempTTInfo tempTTInfo, string abbrev) @safe immutable pure
         {
             utcOffset = tempTTInfo.tt_gmtoff;
             isDST = tempTTInfo.tt_isdst;
@@ -2511,7 +2562,7 @@ private:
 
 
     /+
-        Struct used to hold information relating to $(D TTInfo) while organizing
+        Struct used to hold information relating to `TTInfo` while organizing
         the time zone information prior to putting it in its final form.
       +/
     struct TempTTInfo
@@ -2530,7 +2581,7 @@ private:
 
 
     /+
-        Struct used to hold information relating to $(D Transition) while
+        Struct used to hold information relating to `Transition` while
         organizing the time zone information prior to putting it in its final
         form.
       +/
@@ -2550,8 +2601,8 @@ private:
 
 
     /+
-        Struct used to hold information relating to $(D Transition) and
-        $(D TTInfo) while organizing the time zone information prior to putting
+        Struct used to hold information relating to `Transition` and
+        `TTInfo` while organizing the time zone information prior to putting
         it in its final form.
       +/
     struct TransitionType
@@ -2601,7 +2652,7 @@ private:
 
 
     /+
-        Reads a $(D TempTTInfo) from a TZ file.
+        Reads a `TempTTInfo` from a TZ file.
       +/
     static T readVal(T)(ref File tzFile) @safe
         if (is(T == TempTTInfo))
@@ -2614,10 +2665,11 @@ private:
 
     /+
         Throws:
-            $(REF DateTimeException,std,datetime,date) if $(D result) is false.
+            $(REF DateTimeException,std,datetime,date) if `result` is false.
       +/
     static void _enforceValidTZFile(bool result, size_t line = __LINE__) @safe pure
     {
+        import std.datetime.date : DateTimeException;
         if (!result)
             throw new DateTimeException("Not a valid tzdata file.", __FILE__, line);
     }
@@ -2688,7 +2740,7 @@ private:
         {
             import std.concurrency : initOnce;
 
-            static __gshared uint[string] _tzIndex;
+            __gshared uint[string] _tzIndex;
 
             // _tzIndex is initialized once and then shared across all threads.
             initOnce!_tzIndex(
@@ -2766,24 +2818,21 @@ version (StdDdoc)
         does not use the TZ Database. To use the TZ Database, use
         $(LREF PosixTimeZone) (which reads its information from the TZ Database
         files on disk) on Windows by providing the TZ Database files and telling
-        $(D PosixTimeZone.getTimeZone) where the directory holding them is.
+        `PosixTimeZone.getTimeZone` where the directory holding them is.
 
         The TZ Database files and Windows' time zone information frequently
         do not match. Windows has many errors with regards to when DST switches
         occur (especially for historical dates). Also, the TZ Database files
         include far more time zones than Windows does. So, for accurate
         time zone information, use the TZ Database files with
-        $(LREF PosixTimeZone) rather than $(D WindowsTimeZone). However, because
-        $(D WindowsTimeZone) uses Windows system calls to deal with the time,
+        $(LREF PosixTimeZone) rather than `WindowsTimeZone`. However, because
+        `WindowsTimeZone` uses Windows system calls to deal with the time,
         it's far more likely to match the behavior of other Windows programs.
         Be aware of the differences when selecting a method.
 
-        $(D WindowsTimeZone) does not exist on Posix systems.
+        `WindowsTimeZone` does not exist on Posix systems.
 
-        To get a $(D WindowsTimeZone), either call
-        $(D WindowsTimeZone.getTimeZone) or call $(D TimeZone.getTimeZone)
-        (which will give a $(LREF PosixTimeZone) on Posix systems and a
-         $(D WindowsTimeZone) on Windows systems).
+        To get a `WindowsTimeZone`, call `WindowsTimeZone.getTimeZone`.
 
         See_Also:
             $(HTTP www.iana.org/time-zones, Home of the TZ Database files)
@@ -2795,7 +2844,7 @@ version (StdDdoc)
         /++
             Whether this time zone has Daylight Savings Time at any point in
             time. Note that for some time zone types it may not have DST for
-            current dates but will still return true for $(D hasDST) because the
+            current dates but will still return true for `hasDST` because the
             time zone did at some point have DST.
           +/
         @property override bool hasDST() @safe const nothrow;
@@ -2867,7 +2916,7 @@ version (StdDdoc)
             Returns a list of the names of the time zones installed on the
             system. The list returned by WindowsTimeZone contains the Windows
             TZ names, not the TZ Database names. However,
-            $(D TimeZone.getinstalledTZNames) will return the TZ Database names
+            `TimeZone.getinstalledTZNames` will return the TZ Database names
             which are equivalent to the Windows TZ names.
           +/
         static string[] getInstalledTZNames() @safe;
@@ -2966,6 +3015,7 @@ else version (Windows)
 
                 return new immutable WindowsTimeZone(name, tzInfo);
             }
+            import std.datetime.date : DateTimeException;
             throw new DateTimeException(format("Failed to find time zone: %s", name));
         }
 
@@ -2995,6 +3045,7 @@ else version (Windows)
 
             auto tzNames = getInstalledTZNames();
 
+            import std.datetime.date : DateTimeException;
             foreach (tzName; tzNames)
                 assertNotThrown!DateTimeException(testWTZSuccess(tzName));
         }
@@ -3009,11 +3060,13 @@ else version (Windows)
                 if (tzInfo.DaylightDate.wMonth == 0)
                     return false;
 
+                import std.datetime.date : DateTime, Month;
                 auto utcDateTime = cast(DateTime) SysTime(stdTime, UTC());
 
                 //The limits of what SystemTimeToTzSpecificLocalTime will accept.
                 if (utcDateTime.year < 1601)
                 {
+                    import std.datetime.date : Month;
                     if (utcDateTime.month == Month.feb && utcDateTime.day == 29)
                         utcDateTime.day = 28;
                     utcDateTime.year = 1601;
@@ -3078,6 +3131,7 @@ else version (Windows)
             TIME_ZONE_INFORMATION tzInfo;
             GetTimeZoneInformation(&tzInfo);
 
+            import std.datetime.date : DateTime;
             foreach (year; [1600, 1601, 30_827, 30_828])
                 WindowsTimeZone._dstInEffect(&tzInfo, SysTime(DateTime(year, 1, 1)).stdTime);
         }
@@ -3098,6 +3152,7 @@ else version (Windows)
             {
                 try
                 {
+                    import std.datetime.date : DateTime, Month;
                     bool dstInEffectForLocalDateTime(DateTime localDateTime)
                     {
                         // The limits of what SystemTimeToTzSpecificLocalTime will accept.
@@ -3162,6 +3217,7 @@ else version (Windows)
                         return false;
                     }
 
+                    import std.datetime.date : DateTime;
                     auto localDateTime = cast(DateTime) SysTime(adjTime, UTC());
                     auto localDateTimeBefore = localDateTime - dur!"hours"(1);
                     auto localDateTimeAfter = localDateTime + dur!"hours"(1);
@@ -3337,6 +3393,7 @@ TZConversions parseTZConversions(string windowsZonesXMLText) @safe pure
 
     foreach (line; windowsZonesXMLText.lineSplitter())
     {
+        import std.exception : enforce;
         // Sample line:
         // <mapZone other="Canada Central Standard Time" territory="CA" type="America/Regina America/Swift_Current"/>
 
@@ -3419,7 +3476,8 @@ For terms of use, see http://www.unicode.org/copyright.html
 
             <!-- (UTC-09:00) Alaska -->
             <mapZone other="Alaskan Standard Time" territory="001" type="America/Anchorage"/>
-            <mapZone other="Alaskan Standard Time" territory="US" type="America/Anchorage America/Juneau America/Nome America/Sitka America/Yakutat"/>
+            <mapZone other="Alaskan Standard Time" territory="US" `
+                ~ `type="America/Anchorage America/Juneau America/Nome America/Sitka America/Yakutat"/>
         </mapTimezones>
     </windowsZones>
 </supplementalData>`;
@@ -3457,779 +3515,3 @@ For terms of use, see http://www.unicode.org/copyright.html
         assert(equal(value.uniq(), value), key);
     }
 }
-
-
-// Explicitly undocumented. It will be removed in June 2018. @@@DEPRECATED_2018-07@@@
-deprecated("Use parseTZConversions instead")
-string tzDatabaseNameToWindowsTZName(string tzName) @safe pure nothrow @nogc
-{
-    switch (tzName)
-    {
-        case "Africa/Abidjan": return "Greenwich Standard Time";
-        case "Africa/Accra": return "Greenwich Standard Time";
-        case "Africa/Addis_Ababa": return "E. Africa Standard Time";
-        case "Africa/Algiers": return "W. Central Africa Standard Time";
-        case "Africa/Asmera": return "E. Africa Standard Time";
-        case "Africa/Bamako": return "Greenwich Standard Time";
-        case "Africa/Bangui": return "W. Central Africa Standard Time";
-        case "Africa/Banjul": return "Greenwich Standard Time";
-        case "Africa/Bissau": return "Greenwich Standard Time";
-        case "Africa/Blantyre": return "South Africa Standard Time";
-        case "Africa/Brazzaville": return "W. Central Africa Standard Time";
-        case "Africa/Bujumbura": return "South Africa Standard Time";
-        case "Africa/Cairo": return "Egypt Standard Time";
-        case "Africa/Casablanca": return "Morocco Standard Time";
-        case "Africa/Ceuta": return "Romance Standard Time";
-        case "Africa/Conakry": return "Greenwich Standard Time";
-        case "Africa/Dakar": return "Greenwich Standard Time";
-        case "Africa/Dar_es_Salaam": return "E. Africa Standard Time";
-        case "Africa/Djibouti": return "E. Africa Standard Time";
-        case "Africa/Douala": return "W. Central Africa Standard Time";
-        case "Africa/El_Aaiun": return "Morocco Standard Time";
-        case "Africa/Freetown": return "Greenwich Standard Time";
-        case "Africa/Gaborone": return "South Africa Standard Time";
-        case "Africa/Harare": return "South Africa Standard Time";
-        case "Africa/Johannesburg": return "South Africa Standard Time";
-        case "Africa/Juba": return "E. Africa Standard Time";
-        case "Africa/Kampala": return "E. Africa Standard Time";
-        case "Africa/Khartoum": return "E. Africa Standard Time";
-        case "Africa/Kigali": return "South Africa Standard Time";
-        case "Africa/Kinshasa": return "W. Central Africa Standard Time";
-        case "Africa/Lagos": return "W. Central Africa Standard Time";
-        case "Africa/Libreville": return "W. Central Africa Standard Time";
-        case "Africa/Lome": return "Greenwich Standard Time";
-        case "Africa/Luanda": return "W. Central Africa Standard Time";
-        case "Africa/Lubumbashi": return "South Africa Standard Time";
-        case "Africa/Lusaka": return "South Africa Standard Time";
-        case "Africa/Malabo": return "W. Central Africa Standard Time";
-        case "Africa/Maputo": return "South Africa Standard Time";
-        case "Africa/Maseru": return "South Africa Standard Time";
-        case "Africa/Mbabane": return "South Africa Standard Time";
-        case "Africa/Mogadishu": return "E. Africa Standard Time";
-        case "Africa/Monrovia": return "Greenwich Standard Time";
-        case "Africa/Nairobi": return "E. Africa Standard Time";
-        case "Africa/Ndjamena": return "W. Central Africa Standard Time";
-        case "Africa/Niamey": return "W. Central Africa Standard Time";
-        case "Africa/Nouakchott": return "Greenwich Standard Time";
-        case "Africa/Ouagadougou": return "Greenwich Standard Time";
-        case "Africa/Porto-Novo": return "W. Central Africa Standard Time";
-        case "Africa/Sao_Tome": return "Greenwich Standard Time";
-        case "Africa/Tripoli": return "Libya Standard Time";
-        case "Africa/Tunis": return "W. Central Africa Standard Time";
-        case "Africa/Windhoek": return "Namibia Standard Time";
-        case "America/Adak": return "Aleutian Standard Time";
-        case "America/Anchorage": return "Alaskan Standard Time";
-        case "America/Anguilla": return "SA Western Standard Time";
-        case "America/Antigua": return "SA Western Standard Time";
-        case "America/Araguaina": return "SA Eastern Standard Time";
-        case "America/Argentina/La_Rioja": return "Argentina Standard Time";
-        case "America/Argentina/Rio_Gallegos": return "Argentina Standard Time";
-        case "America/Argentina/Salta": return "Argentina Standard Time";
-        case "America/Argentina/San_Juan": return "Argentina Standard Time";
-        case "America/Argentina/San_Luis": return "Argentina Standard Time";
-        case "America/Argentina/Tucuman": return "Argentina Standard Time";
-        case "America/Argentina/Ushuaia": return "Argentina Standard Time";
-        case "America/Arguaina": return "Tocantins Standard Time";
-        case "America/Aruba": return "SA Western Standard Time";
-        case "America/Asuncion": return "Paraguay Standard Time";
-        case "America/Bahia": return "Bahia Standard Time";
-        case "America/Bahia_Banderas": return "Central Standard Time (Mexico)";
-        case "America/Barbados": return "SA Western Standard Time";
-        case "America/Belem": return "SA Eastern Standard Time";
-        case "America/Belize": return "Central America Standard Time";
-        case "America/Blanc-Sablon": return "SA Western Standard Time";
-        case "America/Boa_Vista": return "SA Western Standard Time";
-        case "America/Bogota": return "SA Pacific Standard Time";
-        case "America/Boise": return "Mountain Standard Time";
-        case "America/Buenos_Aires": return "Argentina Standard Time";
-        case "America/Cambridge_Bay": return "Mountain Standard Time";
-        case "America/Campo_Grande": return "Central Brazilian Standard Time";
-        case "America/Cancun": return "Eastern Standard Time (Mexico)";
-        case "America/Caracas": return "Venezuela Standard Time";
-        case "America/Catamarca": return "Argentina Standard Time";
-        case "America/Cayenne": return "SA Eastern Standard Time";
-        case "America/Cayman": return "SA Pacific Standard Time";
-        case "America/Chicago": return "Central Standard Time";
-        case "America/Chihuahua": return "Mountain Standard Time (Mexico)";
-        case "America/Coral_Harbour": return "SA Pacific Standard Time";
-        case "America/Cordoba": return "Argentina Standard Time";
-        case "America/Costa_Rica": return "Central America Standard Time";
-        case "America/Creston": return "US Mountain Standard Time";
-        case "America/Cuiaba": return "Central Brazilian Standard Time";
-        case "America/Curacao": return "SA Western Standard Time";
-        case "America/Danmarkshavn": return "UTC";
-        case "America/Dawson": return "Pacific Standard Time";
-        case "America/Dawson_Creek": return "US Mountain Standard Time";
-        case "America/Denver": return "Mountain Standard Time";
-        case "America/Detroit": return "Eastern Standard Time";
-        case "America/Dominica": return "SA Western Standard Time";
-        case "America/Edmonton": return "Mountain Standard Time";
-        case "America/Eirunepe": return "SA Pacific Standard Time";
-        case "America/El_Salvador": return "Central America Standard Time";
-        case "America/Fortaleza": return "SA Eastern Standard Time";
-        case "America/Glace_Bay": return "Atlantic Standard Time";
-        case "America/Godthab": return "Greenland Standard Time";
-        case "America/Goose_Bay": return "Atlantic Standard Time";
-        case "America/Grand_Turk": return "Turks And Caicos Standard Time";
-        case "America/Grenada": return "SA Western Standard Time";
-        case "America/Guadeloupe": return "SA Western Standard Time";
-        case "America/Guatemala": return "Central America Standard Time";
-        case "America/Guayaquil": return "SA Pacific Standard Time";
-        case "America/Guyana": return "SA Western Standard Time";
-        case "America/Halifax": return "Atlantic Standard Time";
-        case "America/Havana": return "Cuba Standard Time";
-        case "America/Hermosillo": return "US Mountain Standard Time";
-        case "America/Indiana/Knox": return "Central Standard Time";
-        case "America/Indiana/Marengo": return "US Eastern Standard Time";
-        case "America/Indiana/Petersburg": return "Eastern Standard Time";
-        case "America/Indiana/Tell_City": return "Central Standard Time";
-        case "America/Indiana/Vevay": return "US Eastern Standard Time";
-        case "America/Indiana/Vincennes": return "Eastern Standard Time";
-        case "America/Indiana/Winamac": return "Eastern Standard Time";
-        case "America/Indianapolis": return "US Eastern Standard Time";
-        case "America/Inuvik": return "Mountain Standard Time";
-        case "America/Iqaluit": return "Eastern Standard Time";
-        case "America/Jamaica": return "SA Pacific Standard Time";
-        case "America/Jujuy": return "Argentina Standard Time";
-        case "America/Juneau": return "Alaskan Standard Time";
-        case "America/Kentucky/Monticello": return "Eastern Standard Time";
-        case "America/Kralendijk": return "SA Western Standard Time";
-        case "America/La_Paz": return "SA Western Standard Time";
-        case "America/Lima": return "SA Pacific Standard Time";
-        case "America/Los_Angeles": return "Pacific Standard Time";
-        case "America/Louisville": return "Eastern Standard Time";
-        case "America/Lower_Princes": return "SA Western Standard Time";
-        case "America/Maceio": return "SA Eastern Standard Time";
-        case "America/Managua": return "Central America Standard Time";
-        case "America/Manaus": return "SA Western Standard Time";
-        case "America/Marigot": return "SA Western Standard Time";
-        case "America/Martinique": return "SA Western Standard Time";
-        case "America/Matamoros": return "Central Standard Time";
-        case "America/Mazatlan": return "Mountain Standard Time (Mexico)";
-        case "America/Mendoza": return "Argentina Standard Time";
-        case "America/Menominee": return "Central Standard Time";
-        case "America/Merida": return "Central Standard Time (Mexico)";
-        case "America/Mexico_City": return "Central Standard Time (Mexico)";
-        case "America/Miquelon": return "Saint Pierre Standard Time";
-        case "America/Moncton": return "Atlantic Standard Time";
-        case "America/Monterrey": return "Central Standard Time (Mexico)";
-        case "America/Montevideo": return "Montevideo Standard Time";
-        case "America/Montreal": return "Eastern Standard Time";
-        case "America/Montserrat": return "SA Western Standard Time";
-        case "America/Nassau": return "Eastern Standard Time";
-        case "America/New_York": return "Eastern Standard Time";
-        case "America/Nipigon": return "Eastern Standard Time";
-        case "America/Nome": return "Alaskan Standard Time";
-        case "America/Noronha": return "UTC-02";
-        case "America/North_Dakota/Beulah": return "Central Standard Time";
-        case "America/North_Dakota/Center": return "Central Standard Time";
-        case "America/North_Dakota/New_Salem": return "Central Standard Time";
-        case "America/Ojinaga": return "Mountain Standard Time";
-        case "America/Panama": return "SA Pacific Standard Time";
-        case "America/Pangnirtung": return "Eastern Standard Time";
-        case "America/Paramaribo": return "SA Eastern Standard Time";
-        case "America/Phoenix": return "US Mountain Standard Time";
-        case "America/Port-au-Prince": return "Haiti Standard Time";
-        case "America/Port_of_Spain": return "SA Western Standard Time";
-        case "America/Porto_Velho": return "SA Western Standard Time";
-        case "America/Puerto_Rico": return "SA Western Standard Time";
-        case "America/Rainy_River": return "Central Standard Time";
-        case "America/Rankin_Inlet": return "Central Standard Time";
-        case "America/Recife": return "SA Eastern Standard Time";
-        case "America/Regina": return "Canada Central Standard Time";
-        case "America/Resolute": return "Central Standard Time";
-        case "America/Rio_Branco": return "SA Pacific Standard Time";
-        case "America/Santa_Isabel": return "Pacific Standard Time (Mexico)";
-        case "America/Santarem": return "SA Eastern Standard Time";
-        case "America/Santiago": return "Pacific SA Standard Time";
-        case "America/Santo_Domingo": return "SA Western Standard Time";
-        case "America/Sao_Paulo": return "E. South America Standard Time";
-        case "America/Scoresbysund": return "Azores Standard Time";
-        case "America/Sitka": return "Alaskan Standard Time";
-        case "America/St_Barthelemy": return "SA Western Standard Time";
-        case "America/St_Johns": return "Newfoundland Standard Time";
-        case "America/St_Kitts": return "SA Western Standard Time";
-        case "America/St_Lucia": return "SA Western Standard Time";
-        case "America/St_Thomas": return "SA Western Standard Time";
-        case "America/St_Vincent": return "SA Western Standard Time";
-        case "America/Swift_Current": return "Canada Central Standard Time";
-        case "America/Tegucigalpa": return "Central America Standard Time";
-        case "America/Thule": return "Atlantic Standard Time";
-        case "America/Thunder_Bay": return "Eastern Standard Time";
-        case "America/Tijuana": return "Pacific Standard Time";
-        case "America/Toronto": return "Eastern Standard Time";
-        case "America/Tortola": return "SA Western Standard Time";
-        case "America/Vancouver": return "Pacific Standard Time";
-        case "America/Whitehorse": return "Pacific Standard Time";
-        case "America/Winnipeg": return "Central Standard Time";
-        case "America/Yakutat": return "Alaskan Standard Time";
-        case "America/Yellowknife": return "Mountain Standard Time";
-        case "Antarctica/Casey": return "W. Australia Standard Time";
-        case "Antarctica/Davis": return "SE Asia Standard Time";
-        case "Antarctica/DumontDUrville": return "West Pacific Standard Time";
-        case "Antarctica/Macquarie": return "Central Pacific Standard Time";
-        case "Antarctica/Mawson": return "West Asia Standard Time";
-        case "Antarctica/McMurdo": return "New Zealand Standard Time";
-        case "Antarctica/Palmer": return "Pacific SA Standard Time";
-        case "Antarctica/Rothera": return "SA Eastern Standard Time";
-        case "Antarctica/Syowa": return "E. Africa Standard Time";
-        case "Antarctica/Vostok": return "Central Asia Standard Time";
-        case "Arctic/Longyearbyen": return "W. Europe Standard Time";
-        case "Asia/Aden": return "Arab Standard Time";
-        case "Asia/Almaty": return "Central Asia Standard Time";
-        case "Asia/Amman": return "Jordan Standard Time";
-        case "Asia/Anadyr": return "Russia Time Zone 11";
-        case "Asia/Aqtau": return "West Asia Standard Time";
-        case "Asia/Aqtobe": return "West Asia Standard Time";
-        case "Asia/Ashgabat": return "West Asia Standard Time";
-        case "Asia/Baghdad": return "Arabic Standard Time";
-        case "Asia/Bahrain": return "Arab Standard Time";
-        case "Asia/Baku": return "Azerbaijan Standard Time";
-        case "Asia/Bangkok": return "SE Asia Standard Time";
-        case "Asia/Barnaul": return "Altai Standard Time";
-        case "Asia/Beirut": return "Middle East Standard Time";
-        case "Asia/Bishkek": return "Central Asia Standard Time";
-        case "Asia/Brunei": return "Singapore Standard Time";
-        case "Asia/Calcutta": return "India Standard Time";
-        case "Asia/Chita": return "Transbaikal Standard Time";
-        case "Asia/Choibalsan": return "Ulaanbaatar Standard Time";
-        case "Asia/Colombo": return "Sri Lanka Standard Time";
-        case "Asia/Damascus": return "Syria Standard Time";
-        case "Asia/Dhaka": return "Bangladesh Standard Time";
-        case "Asia/Dili": return "Tokyo Standard Time";
-        case "Asia/Dubai": return "Arabian Standard Time";
-        case "Asia/Dushanbe": return "West Asia Standard Time";
-        case "Asia/Hebron": return "West Bank Standard Time";
-        case "Asia/Hong_Kong": return "China Standard Time";
-        case "Asia/Hovd": return "W. Mongolia Standard Time";
-        case "Asia/Irkutsk": return "North Asia East Standard Time";
-        case "Asia/Jakarta": return "SE Asia Standard Time";
-        case "Asia/Jayapura": return "Tokyo Standard Time";
-        case "Asia/Jerusalem": return "Israel Standard Time";
-        case "Asia/Kabul": return "Afghanistan Standard Time";
-        case "Asia/Kamchatka": return "Russia Time Zone 11";
-        case "Asia/Karachi": return "Pakistan Standard Time";
-        case "Asia/Katmandu": return "Nepal Standard Time";
-        case "Asia/Khandyga": return "Yakutsk Standard Time";
-        case "Asia/Krasnoyarsk": return "North Asia Standard Time";
-        case "Asia/Kuala_Lumpur": return "Singapore Standard Time";
-        case "Asia/Kuching": return "Singapore Standard Time";
-        case "Asia/Kuwait": return "Arab Standard Time";
-        case "Asia/Macau": return "China Standard Time";
-        case "Asia/Magadan": return "Magadan Standard Time";
-        case "Asia/Makassar": return "Singapore Standard Time";
-        case "Asia/Manila": return "Singapore Standard Time";
-        case "Asia/Muscat": return "Arabian Standard Time";
-        case "Asia/Nicosia": return "GTB Standard Time";
-        case "Asia/Novokuznetsk": return "North Asia Standard Time";
-        case "Asia/Novosibirsk": return "N. Central Asia Standard Time";
-        case "Asia/Omsk": return "N. Central Asia Standard Time";
-        case "Asia/Oral": return "West Asia Standard Time";
-        case "Asia/Phnom_Penh": return "SE Asia Standard Time";
-        case "Asia/Pontianak": return "SE Asia Standard Time";
-        case "Asia/Pyongyang": return "North Korea Standard Time";
-        case "Asia/Qatar": return "Arab Standard Time";
-        case "Asia/Qyzylorda": return "Central Asia Standard Time";
-        case "Asia/Rangoon": return "Myanmar Standard Time";
-        case "Asia/Riyadh": return "Arab Standard Time";
-        case "Asia/Saigon": return "SE Asia Standard Time";
-        case "Asia/Sakhalin": return "Sakhalin Standard Time";
-        case "Asia/Samarkand": return "West Asia Standard Time";
-        case "Asia/Seoul": return "Korea Standard Time";
-        case "Asia/Shanghai": return "China Standard Time";
-        case "Asia/Singapore": return "Singapore Standard Time";
-        case "Asia/Srednekolymsk": return "Russia Time Zone 10";
-        case "Asia/Taipei": return "Taipei Standard Time";
-        case "Asia/Tashkent": return "West Asia Standard Time";
-        case "Asia/Tbilisi": return "Georgian Standard Time";
-        case "Asia/Tehran": return "Iran Standard Time";
-        case "Asia/Thimphu": return "Bangladesh Standard Time";
-        case "Asia/Tokyo": return "Tokyo Standard Time";
-        case "Asia/Tomsk": return "Tomsk Standard Time";
-        case "Asia/Ulaanbaatar": return "Ulaanbaatar Standard Time";
-        case "Asia/Urumqi": return "Central Asia Standard Time";
-        case "Asia/Ust-Nera": return "Vladivostok Standard Time";
-        case "Asia/Vientiane": return "SE Asia Standard Time";
-        case "Asia/Vladivostok": return "Vladivostok Standard Time";
-        case "Asia/Yakutsk": return "Yakutsk Standard Time";
-        case "Asia/Yekaterinburg": return "Ekaterinburg Standard Time";
-        case "Asia/Yerevan": return "Caucasus Standard Time";
-        case "Atlantic/Azores": return "Azores Standard Time";
-        case "Atlantic/Bermuda": return "Atlantic Standard Time";
-        case "Atlantic/Canary": return "GMT Standard Time";
-        case "Atlantic/Cape_Verde": return "Cape Verde Standard Time";
-        case "Atlantic/Faeroe": return "GMT Standard Time";
-        case "Atlantic/Madeira": return "GMT Standard Time";
-        case "Atlantic/Reykjavik": return "Greenwich Standard Time";
-        case "Atlantic/South_Georgia": return "UTC-02";
-        case "Atlantic/St_Helena": return "Greenwich Standard Time";
-        case "Atlantic/Stanley": return "SA Eastern Standard Time";
-        case "Australia/Adelaide": return "Cen. Australia Standard Time";
-        case "Australia/Brisbane": return "E. Australia Standard Time";
-        case "Australia/Broken_Hill": return "Cen. Australia Standard Time";
-        case "Australia/Currie": return "Tasmania Standard Time";
-        case "Australia/Darwin": return "AUS Central Standard Time";
-        case "Australia/Eucla": return "Aus Central W. Standard Time";
-        case "Australia/Hobart": return "Tasmania Standard Time";
-        case "Australia/Lindeman": return "E. Australia Standard Time";
-        case "Australia/Lord_Howe": return "Lord Howe Standard Time";
-        case "Australia/Melbourne": return "AUS Eastern Standard Time";
-        case "Australia/Perth": return "W. Australia Standard Time";
-        case "Australia/Sydney": return "AUS Eastern Standard Time";
-        case "CST6CDT": return "Central Standard Time";
-        case "EST5EDT": return "Eastern Standard Time";
-        case "Etc/GMT": return "UTC";
-        case "Etc/GMT+1": return "Cape Verde Standard Time";
-        case "Etc/GMT+10": return "Hawaiian Standard Time";
-        case "Etc/GMT+11": return "UTC-11";
-        case "Etc/GMT+12": return "Dateline Standard Time";
-        case "Etc/GMT+2": return "UTC-02";
-        case "Etc/GMT+3": return "SA Eastern Standard Time";
-        case "Etc/GMT+4": return "SA Western Standard Time";
-        case "Etc/GMT+5": return "SA Pacific Standard Time";
-        case "Etc/GMT+6": return "Central America Standard Time";
-        case "Etc/GMT+7": return "US Mountain Standard Time";
-        case "Etc/GMT+8": return "UTC-08";
-        case "Etc/GMT+9": return "UTC-09";
-        case "Etc/GMT-1": return "W. Central Africa Standard Time";
-        case "Etc/GMT-10": return "West Pacific Standard Time";
-        case "Etc/GMT-11": return "Central Pacific Standard Time";
-        case "Etc/GMT-12": return "UTC+12";
-        case "Etc/GMT-13": return "Tonga Standard Time";
-        case "Etc/GMT-14": return "Line Islands Standard Time";
-        case "Etc/GMT-2": return "South Africa Standard Time";
-        case "Etc/GMT-3": return "E. Africa Standard Time";
-        case "Etc/GMT-4": return "Arabian Standard Time";
-        case "Etc/GMT-5": return "West Asia Standard Time";
-        case "Etc/GMT-6": return "Central Asia Standard Time";
-        case "Etc/GMT-7": return "SE Asia Standard Time";
-        case "Etc/GMT-8": return "Singapore Standard Time";
-        case "Etc/GMT-9": return "Tokyo Standard Time";
-        case "Europe/Amsterdam": return "W. Europe Standard Time";
-        case "Europe/Andorra": return "W. Europe Standard Time";
-        case "Europe/Astrakhan": return "Astrakhan Standard Time";
-        case "Europe/Athens": return "GTB Standard Time";
-        case "Europe/Belgrade": return "Central Europe Standard Time";
-        case "Europe/Berlin": return "W. Europe Standard Time";
-        case "Europe/Bratislava": return "Central Europe Standard Time";
-        case "Europe/Brussels": return "Romance Standard Time";
-        case "Europe/Bucharest": return "GTB Standard Time";
-        case "Europe/Budapest": return "Central Europe Standard Time";
-        case "Europe/Busingen": return "W. Europe Standard Time";
-        case "Europe/Chisinau": return "GTB Standard Time";
-        case "Europe/Copenhagen": return "Romance Standard Time";
-        case "Europe/Dublin": return "GMT Standard Time";
-        case "Europe/Gibraltar": return "W. Europe Standard Time";
-        case "Europe/Guernsey": return "GMT Standard Time";
-        case "Europe/Helsinki": return "FLE Standard Time";
-        case "Europe/Isle_of_Man": return "GMT Standard Time";
-        case "Europe/Istanbul": return "Turkey Standard Time";
-        case "Europe/Jersey": return "GMT Standard Time";
-        case "Europe/Kaliningrad": return "Kaliningrad Standard Time";
-        case "Europe/Kiev": return "FLE Standard Time";
-        case "Europe/Lisbon": return "GMT Standard Time";
-        case "Europe/Ljubljana": return "Central Europe Standard Time";
-        case "Europe/London": return "GMT Standard Time";
-        case "Europe/Luxembourg": return "W. Europe Standard Time";
-        case "Europe/Madrid": return "Romance Standard Time";
-        case "Europe/Malta": return "W. Europe Standard Time";
-        case "Europe/Mariehamn": return "FLE Standard Time";
-        case "Europe/Minsk": return "Belarus Standard Time";
-        case "Europe/Monaco": return "W. Europe Standard Time";
-        case "Europe/Moscow": return "Russian Standard Time";
-        case "Europe/Oslo": return "W. Europe Standard Time";
-        case "Europe/Paris": return "Romance Standard Time";
-        case "Europe/Podgorica": return "Central Europe Standard Time";
-        case "Europe/Prague": return "Central Europe Standard Time";
-        case "Europe/Riga": return "FLE Standard Time";
-        case "Europe/Rome": return "W. Europe Standard Time";
-        case "Europe/Samara": return "Russia Time Zone 3";
-        case "Europe/San_Marino": return "W. Europe Standard Time";
-        case "Europe/Sarajevo": return "Central European Standard Time";
-        case "Europe/Simferopol": return "Russian Standard Time";
-        case "Europe/Skopje": return "Central European Standard Time";
-        case "Europe/Sofia": return "FLE Standard Time";
-        case "Europe/Stockholm": return "W. Europe Standard Time";
-        case "Europe/Tallinn": return "FLE Standard Time";
-        case "Europe/Tirane": return "Central Europe Standard Time";
-        case "Europe/Uzhgorod": return "FLE Standard Time";
-        case "Europe/Vaduz": return "W. Europe Standard Time";
-        case "Europe/Vatican": return "W. Europe Standard Time";
-        case "Europe/Vienna": return "W. Europe Standard Time";
-        case "Europe/Vilnius": return "FLE Standard Time";
-        case "Europe/Volgograd": return "Russian Standard Time";
-        case "Europe/Warsaw": return "Central European Standard Time";
-        case "Europe/Zagreb": return "Central European Standard Time";
-        case "Europe/Zaporozhye": return "FLE Standard Time";
-        case "Europe/Zurich": return "W. Europe Standard Time";
-        case "Indian/Antananarivo": return "E. Africa Standard Time";
-        case "Indian/Chagos": return "Central Asia Standard Time";
-        case "Indian/Christmas": return "SE Asia Standard Time";
-        case "Indian/Cocos": return "Myanmar Standard Time";
-        case "Indian/Comoro": return "E. Africa Standard Time";
-        case "Indian/Kerguelen": return "West Asia Standard Time";
-        case "Indian/Mahe": return "Mauritius Standard Time";
-        case "Indian/Maldives": return "West Asia Standard Time";
-        case "Indian/Mauritius": return "Mauritius Standard Time";
-        case "Indian/Mayotte": return "E. Africa Standard Time";
-        case "Indian/Reunion": return "Mauritius Standard Time";
-        case "MST7MDT": return "Mountain Standard Time";
-        case "PST8PDT": return "Pacific Standard Time";
-        case "Pacific/Apia": return "Samoa Standard Time";
-        case "Pacific/Auckland": return "New Zealand Standard Time";
-        case "Pacific/Bougainville": return "Bougainville Standard Time";
-        case "Pacific/Chatham": return "Chatham Islands Standard Time";
-        case "Pacific/Easter": return "Easter Island Standard Time";
-        case "Pacific/Efate": return "Central Pacific Standard Time";
-        case "Pacific/Enderbury": return "Tonga Standard Time";
-        case "Pacific/Fakaofo": return "Tonga Standard Time";
-        case "Pacific/Fiji": return "Fiji Standard Time";
-        case "Pacific/Funafuti": return "UTC+12";
-        case "Pacific/Galapagos": return "Central America Standard Time";
-        case "Pacific/Guadalcanal": return "Central Pacific Standard Time";
-        case "Pacific/Guam": return "West Pacific Standard Time";
-        case "Pacific/Honolulu": return "Hawaiian Standard Time";
-        case "Pacific/Johnston": return "Hawaiian Standard Time";
-        case "Pacific/Kiritimati": return "Line Islands Standard Time";
-        case "Pacific/Kosrae": return "Central Pacific Standard Time";
-        case "Pacific/Kwajalein": return "UTC+12";
-        case "Pacific/Majuro": return "UTC+12";
-        case "Pacific/Marquesas": return "Marquesas Standard Time";
-        case "Pacific/Midway": return "UTC-11";
-        case "Pacific/Nauru": return "UTC+12";
-        case "Pacific/Niue": return "UTC-11";
-        case "Pacific/Noumea": return "Central Pacific Standard Time";
-        case "Pacific/Norfolk": return "Norfolk Standard Time";
-        case "Pacific/Pago_Pago": return "UTC-11";
-        case "Pacific/Palau": return "Tokyo Standard Time";
-        case "Pacific/Ponape": return "Central Pacific Standard Time";
-        case "Pacific/Port_Moresby": return "West Pacific Standard Time";
-        case "Pacific/Rarotonga": return "Hawaiian Standard Time";
-        case "Pacific/Saipan": return "West Pacific Standard Time";
-        case "Pacific/Tahiti": return "Hawaiian Standard Time";
-        case "Pacific/Tarawa": return "UTC+12";
-        case "Pacific/Tongatapu": return "Tonga Standard Time";
-        case "Pacific/Truk": return "West Pacific Standard Time";
-        case "Pacific/Wake": return "UTC+12";
-        case "Pacific/Wallis": return "UTC+12";
-        default: return null;
-    }
-}
-
-version (Windows) version (UpdateWindowsTZTranslations) deprecated @system unittest
-{
-    import std.stdio : stderr;
-
-    foreach (tzName; TimeZone.getInstalledTZNames())
-    {
-        if (tzDatabaseNameToWindowsTZName(tzName) is null)
-            stderr.writeln("Missing TZName to Windows translation: ", tzName);
-    }
-}
-
-
-// Explicitly undocumented. It will be removed in June 2018. @@@DEPRECATED_2018-07@@@
-deprecated("Use parseTZConversions instead")
-string windowsTZNameToTZDatabaseName(string tzName) @safe pure nothrow @nogc
-{
-    switch (tzName)
-    {
-        case "AUS Central Standard Time": return "Australia/Darwin";
-        case "AUS Eastern Standard Time": return "Australia/Sydney";
-        case "Aus Central W. Standard Time": return "Australia/Eucla";
-        case "Afghanistan Standard Time": return "Asia/Kabul";
-        case "Haiti Standard Time": return "America/Port-au-Prince";
-        case "Alaskan Standard Time": return "America/Anchorage";
-        case "Aleutian Standard Time": return "America/Adak";
-        case "Altai Standard Time": return "Asia/Barnaul";
-        case "Arab Standard Time": return "Asia/Riyadh";
-        case "Arabian Standard Time": return "Asia/Dubai";
-        case "Arabic Standard Time": return "Asia/Baghdad";
-        case "Argentina Standard Time": return "America/Buenos_Aires";
-        case "Astrakhan Standard Time": return "Europe/Astrakhan";
-        case "Atlantic Standard Time": return "America/Halifax";
-        case "Azerbaijan Standard Time": return "Asia/Baku";
-        case "Azores Standard Time": return "Atlantic/Azores";
-        case "Bahia Standard Time": return "America/Bahia";
-        case "Bangladesh Standard Time": return "Asia/Dhaka";
-        case "Belarus Standard Time": return "Europe/Minsk";
-        case "Bougainville Standard Time": return "Pacific/Bougainville";
-        case "Canada Central Standard Time": return "America/Regina";
-        case "Cape Verde Standard Time": return "Atlantic/Cape_Verde";
-        case "Caucasus Standard Time": return "Asia/Yerevan";
-        case "Cen. Australia Standard Time": return "Australia/Adelaide";
-        case "Central America Standard Time": return "America/Guatemala";
-        case "Central Asia Standard Time": return "Asia/Almaty";
-        case "Central Brazilian Standard Time": return "America/Cuiaba";
-        case "Central Europe Standard Time": return "Europe/Budapest";
-        case "Central European Standard Time": return "Europe/Warsaw";
-        case "Central Pacific Standard Time": return "Pacific/Guadalcanal";
-        case "Central Standard Time": return "America/Chicago";
-        case "Central Standard Time (Mexico)": return "America/Mexico_City";
-        case "Chatham Islands Standard Time": return "Pacific/Chatham";
-        case "China Standard Time": return "Asia/Shanghai";
-        case "Cuba Standard Time": return "America/Havana";
-        case "Dateline Standard Time": return "Etc/GMT+12";
-        case "E. Africa Standard Time": return "Africa/Nairobi";
-        case "E. Australia Standard Time": return "Australia/Brisbane";
-        // This doesn't appear to be in the current stuff from MS, but the autotester
-        // is failing without it (probably because its time zone data hasn't been
-        // updated recently enough).
-        case "E. Europe Standard Time": return "Europe/Minsk";
-        case "E. South America Standard Time": return "America/Sao_Paulo";
-        case "Easter Island Standard Time": return "Pacific/Easter";
-        case "Eastern Standard Time": return "America/New_York";
-        case "Eastern Standard Time (Mexico)": return "America/Cancun";
-        case "Egypt Standard Time": return "Africa/Cairo";
-        case "Ekaterinburg Standard Time": return "Asia/Yekaterinburg";
-        case "FLE Standard Time": return "Europe/Kiev";
-        case "Fiji Standard Time": return "Pacific/Fiji";
-        case "GMT Standard Time": return "Europe/London";
-        case "GTB Standard Time": return "Europe/Athens";
-        case "Georgian Standard Time": return "Asia/Tbilisi";
-        case "Greenland Standard Time": return "America/Godthab";
-        case "Greenwich Standard Time": return "Atlantic/Reykjavik";
-        case "Hawaiian Standard Time": return "Pacific/Honolulu";
-        case "India Standard Time": return "Asia/Calcutta";
-        case "Iran Standard Time": return "Asia/Tehran";
-        case "Israel Standard Time": return "Asia/Jerusalem";
-        case "Jordan Standard Time": return "Asia/Amman";
-        case "Kaliningrad Standard Time": return "Europe/Kaliningrad";
-        // Same as with E. Europe Standard Time.
-        case "Kamchatka Standard Time": return "Asia/Kamchatka";
-        case "Korea Standard Time": return "Asia/Seoul";
-        case "Libya Standard Time": return "Africa/Tripoli";
-        case "Line Islands Standard Time": return "Pacific/Kiritimati";
-        case "Lord Howe Standard Time": return "Australia/Lord_Howe";
-        case "Magadan Standard Time": return "Asia/Magadan";
-        case "Marquesas Standard Time": return "Pacific/Marquesas";
-        case "Mauritius Standard Time": return "Indian/Mauritius";
-        // Same as with E. Europe Standard Time.
-        case "Mexico Standard Time": return "America/Mexico_City";
-        // Same as with E. Europe Standard Time.
-        case "Mexico Standard Time 2": return "America/Chihuahua";
-        // Same as with E. Europe Standard Time.
-        case "Mid-Atlantic Standard Time": return "Etc/GMT+2";
-        case "Middle East Standard Time": return "Asia/Beirut";
-        case "Montevideo Standard Time": return "America/Montevideo";
-        case "Morocco Standard Time": return "Africa/Casablanca";
-        case "Mountain Standard Time": return "America/Denver";
-        case "Mountain Standard Time (Mexico)": return "America/Chihuahua";
-        case "Myanmar Standard Time": return "Asia/Rangoon";
-        case "N. Central Asia Standard Time": return "Asia/Novosibirsk";
-        case "Namibia Standard Time": return "Africa/Windhoek";
-        case "Nepal Standard Time": return "Asia/Katmandu";
-        case "New Zealand Standard Time": return "Pacific/Auckland";
-        case "Newfoundland Standard Time": return "America/St_Johns";
-        case "Norfolk Standard Time": return "Pacific/Norfolk";
-        case "North Asia East Standard Time": return "Asia/Irkutsk";
-        case "North Asia Standard Time": return "Asia/Krasnoyarsk";
-        case "North Korea Standard Time": return "Asia/Pyongyang";
-        case "Pacific SA Standard Time": return "America/Santiago";
-        case "Pacific Standard Time": return "America/Los_Angeles";
-        case "Pacific Standard Time (Mexico)": return "America/Santa_Isabel";
-        case "Pakistan Standard Time": return "Asia/Karachi";
-        case "Paraguay Standard Time": return "America/Asuncion";
-        case "Romance Standard Time": return "Europe/Paris";
-        case "Russia Time Zone 10": return "Asia/Srednekolymsk";
-        case "Russia Time Zone 11": return "Asia/Anadyr";
-        case "Russia Time Zone 3": return "Europe/Samara";
-        case "Russian Standard Time": return "Europe/Moscow";
-        case "SA Eastern Standard Time": return "America/Cayenne";
-        case "SA Pacific Standard Time": return "America/Bogota";
-        case "SA Western Standard Time": return "America/La_Paz";
-        case "SE Asia Standard Time": return "Asia/Bangkok";
-        case "Sakhalin Standard Time": return "Asia/Sakhalin";
-        case "Saint Pierre Standard Time": return "America/Miquelon";
-        case "Samoa Standard Time": return "Pacific/Apia";
-        case "Singapore Standard Time": return "Asia/Singapore";
-        case "South Africa Standard Time": return "Africa/Johannesburg";
-        case "Sri Lanka Standard Time": return "Asia/Colombo";
-        case "Syria Standard Time": return "Asia/Damascus";
-        case "Taipei Standard Time": return "Asia/Taipei";
-        case "Tasmania Standard Time": return "Australia/Hobart";
-        case "Tocantins Standard Time": return "America/Arguaina";
-        case "Tokyo Standard Time": return "Asia/Tokyo";
-        case "Tomsk Standard Time": return "Asia/Tomsk";
-        case "Tonga Standard Time": return "Pacific/Tongatapu";
-        case "Transbaikal Standard Time": return "Asia/Chita";
-        case "Turkey Standard Time": return "Europe/Istanbul";
-        case "Turks And Caicos Standard Time": return "America/Grand_Turk";
-        case "US Eastern Standard Time": return "America/Indianapolis";
-        case "US Mountain Standard Time": return "America/Phoenix";
-        case "UTC": return "Etc/GMT";
-        case "UTC+12": return "Etc/GMT-12";
-        case "UTC-02": return "Etc/GMT+2";
-        case "UTC-08": return "Etc/GMT+8";
-        case "UTC-09": return "Etc/GMT+9";
-        case "UTC-11": return "Etc/GMT+11";
-        case "Ulaanbaatar Standard Time": return "Asia/Ulaanbaatar";
-        case "Venezuela Standard Time": return "America/Caracas";
-        case "Vladivostok Standard Time": return "Asia/Vladivostok";
-        case "W. Australia Standard Time": return "Australia/Perth";
-        case "W. Central Africa Standard Time": return "Africa/Lagos";
-        case "W. Europe Standard Time": return "Europe/Berlin";
-        case "W. Mongolia Standard Time": return "Asia/Hovd";
-        case "West Asia Standard Time": return "Asia/Tashkent";
-        case "West Bank Standard Time": return "Asia/Hebron";
-        case "West Pacific Standard Time": return "Pacific/Port_Moresby";
-        case "Yakutsk Standard Time": return "Asia/Yakutsk";
-        default: return null;
-    }
-}
-
-version (Windows) version (UpdateWindowsTZTranslations) deprecated @system unittest
-{
-    import std.stdio : stderr;
-
-    foreach (winName; WindowsTimeZone.getInstalledTZNames())
-    {
-        if (windowsTZNameToTZDatabaseName(winName) is null)
-            stderr.writeln("Missing Windows to TZName translation: ", winName);
-    }
-}
-
-
-// This script is for regenerating tzDatabaseNameToWindowsTZName and
-// windowsTZNameToTZDatabaseName from
-// http://unicode.org/cldr/data/common/supplemental/windowsZones.xml
-
-/+
-#!/bin/rdmd
-
-import std.algorithm;
-import std.array;
-import std.conv;
-import std.datetime;
-import std.exception;
-import std.path;
-import std.stdio;
-import std.string;
-
-int main(string[] args)
-{
-    if (args.length != 4 || args[1].baseName != "windowsZones.xml")
-    {
-        stderr.writeln("genTZs.d windowsZones.xml <nix2WinFile> <win2NixFile>");
-        return -1;
-    }
-
-    string[][string] win2Nix;
-    string[][string] nix2Win;
-    immutable f1 = `<mapZone other="`;
-    immutable f2 = `type="`;
-
-    auto file = File(args[1]);
-    foreach (line; file.byLine())
-    {
-        line = line.find(f1);
-        if (line.empty)
-            continue;
-        line = line[f1.length .. $];
-        auto next = line.find('"');
-        auto win = to!string(line[0 .. $ - next.length]);
-        line = next.find(f2);
-        line = line[f2.length .. $];
-        next = line.find('"');
-        auto nixes = to!string(line[0 .. $ - next.length]).split();
-
-        if (auto l = win in win2Nix)
-            *l ~= nixes;
-        else
-            win2Nix[win] = nixes;
-        foreach (nix; nixes)
-        {
-            if (auto w = nix in nix2Win)
-                *w ~= win;
-            else
-                nix2Win[nix] = [win];
-        }
-    }
-
-    foreach (nix; nix2Win.byKey())
-    {
-        auto wins = nix2Win[nix];
-        nix2Win[nix] = wins.sort().uniq().array();
-    }
-
-    foreach (win; win2Nix.byKey())
-    {
-        auto nixes = win2Nix[win];
-        win2Nix[win] = nixes.sort().uniq().array();
-    }
-
-    // AFAIK, there should be no cases of a TZ Database time zone converting to
-    // multiple windows time zones.
-    foreach (nix, wins; nix2Win)
-        enforce(wins.length == 1, format("%s -> %s", nix, wins));
-
-    // We'll try to eliminate multiples by favoring a conversion if it's already
-    // in Phobos, but if it's new, then the correct one will have to be chosen
-    // manually from the results.
-    string[] haveMultiple;
-    foreach (win, nixes; win2Nix)
-    {
-        if (nixes.length > 1)
-            haveMultiple ~= win;
-    }
-    bool[string] haveConflicts;
-    foreach (win; haveMultiple)
-    {
-        if (auto curr = windowsTZNameToTZDatabaseName(win))
-        {
-            if (auto other = curr in nix2Win)
-            {
-                if ((*other)[0] == win)
-                {
-                    win2Nix[win] = [curr];
-                    continue;
-                }
-            }
-        }
-        haveConflicts[win] = true;
-        writefln("Warning: %s -> %s", win, win2Nix[win]);
-    }
-
-
-    string[] nix2WinLines = [
-        `string tzDatabaseNameToWindowsTZName(string tzName) @safe pure nothrow @nogc`,
-        `{`,
-        `    switch (tzName)`,
-        `    {`];
-
-    foreach (nix; nix2Win.keys.sort())
-        nix2WinLines ~= format(`        case "%s": return "%s";`, nix, nix2Win[nix][0]);
-
-    nix2WinLines ~= [
-        `        default: return null;`,
-        `    }`,
-        `}`];
-
-
-    string[] win2NixLines = [
-        `string windowsTZNameToTZDatabaseName(string tzName) @safe pure nothrow @nogc`,
-        `{`,
-        `    switch (tzName)`,
-        `    {`];
-    foreach (win; win2Nix.keys.sort())
-    {
-        immutable hasMultiple = cast(bool)(win in haveConflicts);
-        foreach (nix; win2Nix[win])
-            win2NixLines ~= format(`        case "%s": return "%s";%s`, win, nix, hasMultiple ? " FIXME" : "");
-    }
-
-    win2NixLines ~= [
-        `        default: return null;`,
-        `    }`,
-        `}`];
-
-
-    auto nix2WinFile = args[2];
-    std.file.write(nix2WinFile, nix2WinLines.join("\n"));
-
-    auto win2NixFile = args[3];
-    std.file.write(win2NixFile, win2NixLines.join("\n"));
-
-    return 0;
-}
-+/

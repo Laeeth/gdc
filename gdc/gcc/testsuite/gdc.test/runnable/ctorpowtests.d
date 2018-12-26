@@ -27,8 +27,8 @@ void main()
   assert(magicVariable()==2);
 }
 
-// bug 991 -- invalid.
-// bug 3500 -- is this related to 2127?
+// https://issues.dlang.org/show_bug.cgi?id=991 -- invalid.
+// https://issues.dlang.org/show_bug.cgi?id=3500 -- is this related to 2127?
 
 // Tests for ^^
 // TODO: These tests should not require import std.math.
@@ -109,7 +109,7 @@ static assert( 9 ^^ -1.0 == 1.0 / 9);
 static assert( !is(typeof(2 ^^ -5)));
 static assert( !is(typeof((-2) ^^ -4)));
 
-// Bug 3535
+// https://issues.dlang.org/show_bug.cgi?id=3535
 struct StructWithCtor
 {
     this(int _n) {
@@ -156,7 +156,8 @@ static assert(bazra(14)==64);
 
 void moreCommaTests()
 {
-   auto k = (containsAsm(), containsAsm());
+   (containsAsm(), containsAsm());
+   auto k = containsAsm();
    for (int i=0; i< k^^2; i+=StructWithCtor(1).n) {}
 }
 

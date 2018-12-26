@@ -1,4 +1,0 @@
-{std.internal.math.gammafunction { aarch64*-*-* }}
-{std.internal.math.errorfunction { aarch64*-*-* }}
-{std.math { aarch64*-*-* }}
-{std.numeric { aarch64*-*-* }}

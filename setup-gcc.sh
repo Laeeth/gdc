@@ -97,6 +97,9 @@ if test $d_quilt_patch -eq 1; then
   if test -f "../patches/gcc.patch"; then
     echo gcc.patch >> ../patches/series
   fi
+  if test -f "../patches/ddmd.patch"; then
+    echo ddmd.patch >> ../patches/series
+  fi
 
   quilt upgrade && \
     quilt push -a && \
@@ -105,6 +108,9 @@ else
   cd $d_gccsrc
   if test -f "../patches/gcc.patch"; then
     patch -p1 -i ../patches/gcc.patch || exit 1
+  fi
+  if test -f "../patches/ddmd.patch"; then
+    patch -p1 -i ../patches/ddmd.patch || exit 1
   fi
   cd $top
 fi

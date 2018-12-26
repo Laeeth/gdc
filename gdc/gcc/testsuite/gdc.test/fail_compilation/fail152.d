@@ -1,24 +1,28 @@
 /*
 TEST_OUTPUT:
 ---
-fail_compilation/fail152.d(15): Error: cannot use type double as an operand
+fail_compilation/fail152.d(15): Error: cannot use type `double` as an operand
 ---
 */
 
-// 1028 Segfault using tuple inside asm code.
-
+// https://issues.dlang.org/show_bug.cgi?id=1028
+// Segfault using tuple inside asm code.
 void a(X...)(X expr)
 {
     alias X[0] var1;
     version(GNU)
     {
-        version(X86) asm {"fstpd %0;" : "=m" (var1) : : ;}
-        else version(X86_64) asm {"fstpd %0;" : "=m" (var1) : : ;}
-        else static assert(false, "ASM code not implemented for this architecture");
+        asm {
+            "" : "=m" (X[0]);
+            "" : "=m" (var1);
+        }
     }
-    else asm {
-        //fld double ptr X[0];   // (1) segfaults
-        fstp double ptr var1;    // (2) ICE
+    else
+    {
+        asm {
+            //fld double ptr X[0];   // (1) segfaults
+            fstp double ptr var1;    // (2) ICE
+        }
     }
 }
 

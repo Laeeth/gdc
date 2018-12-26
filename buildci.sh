@@ -198,6 +198,9 @@ configure() {
     if test -f ${project_dir}/patches/gcc.patch; then
         patch -d ${project_dir}/gcc -p1 -i ${project_dir}/patches/gcc.patch || exit 1
     fi
+    if test -f ${project_dir}/patches/ddmd.patch; then
+        patch -d ${project_dir}/gcc -p1 -i ${project_dir}/patches/ddmd.patch || exit 1
+    fi
 
     ## And download GCC prerequisites.
     # Makes use of local cache to save downloading on every build run.

@@ -42,10 +42,6 @@ extern (Windows):
             {
                 "str sp,%0" : "=m" esp : : ;
             }
-            else version(AArch64) asm
-            {
-                "mov x0,sp; str w0,%0" : "=m" esp : : "x0";
-            }
             else static assert(false, "ASM code not implemented for this architecture");
         }
         else asm
@@ -78,10 +74,6 @@ int main()
             {
                 "str sp,%0" : "=m" esp : : ;
             }
-            else version(AArch64) asm
-            {
-                "mov x0,sp; str w0,%0" : "=m" esp : : "x0";
-            }
             else static assert(false, "ASM code not implemented for this architecture");
         }
         else asm
@@ -104,10 +96,6 @@ int main()
             else version(ARM) asm
             {
                 "str sp,%0" : "=m" esp : : ;
-            }
-            else version(AArch64) asm
-            {
-                "mov x0,sp; str w0,%0" : "=m" esp : : "x0";
             }
             else static assert(false, "ASM code not implemented for this architecture");
         }

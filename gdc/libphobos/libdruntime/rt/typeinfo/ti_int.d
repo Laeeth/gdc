@@ -2,7 +2,7 @@
  * TypeInfo support code.
  *
  * Copyright: Copyright Digital Mars 2004 - 2009.
- * License:   $(WEB www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
+ * License:   $(HTTP www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
  * Authors:   Walter Bright
  */
 
@@ -24,9 +24,10 @@ class TypeInfo_i : TypeInfo
 
     override string toString() const pure nothrow @safe { return "int"; }
 
-    override size_t getHash(in void* p)
+    override size_t getHash(scope const void* p)
     {
-        return *cast(uint *)p;
+        // Hash as if unsigned.
+        return *cast(const uint *)p;
     }
 
     override bool equals(in void* p1, in void* p2)

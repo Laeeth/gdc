@@ -2,7 +2,7 @@
  * TypeInfo support code.
  *
  * Copyright: Copyright Digital Mars 2004 - 2009.
- * License:   $(WEB www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
+ * License:   $(HTTP www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
  * Authors:   Walter Bright
  */
 
@@ -14,7 +14,6 @@
 module rt.typeinfo.ti_Ashort;
 
 private import core.stdc.string;
-private import rt.util.hash;
 
 // short[]
 
@@ -24,10 +23,11 @@ class TypeInfo_As : TypeInfo_Array
 
     override string toString() const { return "short[]"; }
 
-    override size_t getHash(in void* p) @trusted const
+    override size_t getHash(scope const void* p) @trusted const
     {
-        const s = *cast(const short[]*)p;
-        return rt.util.hash.hashOf(s, 0);
+        // Hash as if unsigned.
+        const s = *cast(const ushort[]*)p;
+        return hashOf(s);
     }
 
     override bool equals(in void* p1, in void* p2) const

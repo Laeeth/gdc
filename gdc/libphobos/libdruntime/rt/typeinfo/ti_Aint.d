@@ -2,7 +2,7 @@
  * TypeInfo support code.
  *
  * Copyright: Copyright Digital Mars 2004 - 2009.
- * License:   $(WEB www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
+ * License:   $(HTTP www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
  * Authors:   Walter Bright
  */
 
@@ -14,7 +14,6 @@
 module rt.typeinfo.ti_Aint;
 
 private import core.stdc.string;
-private import rt.util.hash;
 
 extern (C) void[] _adSort(void[] a, TypeInfo ti);
 
@@ -26,10 +25,11 @@ class TypeInfo_Ai : TypeInfo_Array
 
     override string toString() const { return "int[]"; }
 
-    override size_t getHash(in void* p) @trusted const
+    override size_t getHash(scope const void* p) @trusted const
     {
-        const s = *cast(const int[]*)p;
-        return rt.util.hash.hashOf(s, 0);
+        // Hash as if unsigned.
+        const s = *cast(const uint[]*)p;
+        return hashOf(s);
     }
 
     override bool equals(in void* p1, in void* p2) const

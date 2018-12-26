@@ -2,7 +2,7 @@
  * HashTab container for internal usage.
  *
  * Copyright: Copyright Martin Nowak 2013.
- * License:   $(WEB www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
+ * License:   $(HTTP www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
  * Authors:   Martin Nowak
  */
 module rt.util.container.hashtab;
@@ -54,7 +54,7 @@ struct HashTab(Key, Value)
 
     void remove(in Key key)
     in { assert(key in this); }
-    body
+    do
     {
         ensureNotInOpApply();
 
@@ -146,11 +146,10 @@ private:
 
     static hash_t hashOf(in ref Key key) @trusted
     {
-        import rt.util.hash : hashOf;
         static if (is(Key U : U[]))
-            return hashOf(key, 0);
+            return .hashOf(key, 0);
         else
-            return hashOf((&key)[0 .. 1], 0);
+            return .hashOf((&key)[0 .. 1], 0);
     }
 
     @property hash_t mask() const
@@ -163,7 +162,7 @@ private:
     {
         assert(_buckets.length);
     }
-    body
+    do
     {
         immutable ocnt = _buckets.length;
         immutable nmask = 2 * ocnt - 1;
@@ -195,7 +194,7 @@ private:
     {
         assert(_buckets.length >= 2);
     }
-    body
+    do
     {
         immutable ocnt = _buckets.length;
         immutable ncnt = ocnt >> 1;

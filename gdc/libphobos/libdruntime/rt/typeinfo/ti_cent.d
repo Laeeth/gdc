@@ -2,7 +2,7 @@
  * TypeInfo support code.
  *
  * Copyright: Copyright Digital Mars 2004 - 2015.
- * License:   $(WEB www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
+ * License:   $(HTTP www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
  * Authors:   Walter Bright
  */
 
@@ -12,8 +12,6 @@
  *          http://www.boost.org/LICENSE_1_0.txt)
  */
 module rt.typeinfo.ti_cent;
-
-private import rt.util.hash;
 
 static if (is(cent)):
 
@@ -28,9 +26,10 @@ class TypeInfo_zi : TypeInfo
 
     override string toString() const pure nothrow @safe { return "cent"; }
 
-    override size_t getHash(in void* p)
+    override size_t getHash(scope const void* p)
     {
-        return rt.util.hash.hashOf(p[0 .. cent.sizeof], 0);
+        // Hash as if unsigned.
+        return hashOf(*cast(const ucent*) p);
     }
 
     override bool equals(in void* p1, in void* p2)

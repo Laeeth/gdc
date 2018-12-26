@@ -2,7 +2,7 @@
  * Contains traits for runtime internal usage.
  *
  * Copyright: Copyright Digital Mars 2014 -.
- * License:   $(WEB www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
+ * License:   $(HTTP www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
  * Authors:   Martin Nowak
  * Source: $(DRUNTIMESRC core/internal/_traits.d)
  */
@@ -128,21 +128,38 @@ template dtorIsNothrow(T)
     enum dtorIsNothrow = is(typeof(function{T t=void;}) : void function() nothrow);
 }
 
+// taken from std.meta.allSatisfy
+package(core.internal)
+template allSatisfy(alias F, T...)
+{
+    static foreach (Ti; T)
+    {
+        static if (!is(typeof(allSatisfy) == bool) && // not yet defined
+                   !F!(Ti))
+        {
+            enum allSatisfy = false;
+        }
+    }
+    static if (!is(typeof(allSatisfy) == bool)) // if not yet defined
+    {
+        enum allSatisfy = true;
+    }
+}
+
+// taken from std.meta.anySatisfy
 template anySatisfy(alias F, T...)
 {
-    static if (T.length == 0)
+    static foreach (Ti; T)
+    {
+        static if (!is(typeof(anySatisfy) == bool) && // not yet defined
+                   F!(Ti))
+        {
+            enum anySatisfy = true;
+        }
+    }
+    static if (!is(typeof(anySatisfy) == bool)) // if not yet defined
     {
         enum anySatisfy = false;
-    }
-    else static if (T.length == 1)
-    {
-        enum anySatisfy = F!(T[0]);
-    }
-    else
-    {
-        enum anySatisfy =
-            anySatisfy!(F, T[ 0  .. $/2]) ||
-            anySatisfy!(F, T[$/2 ..  $ ]);
     }
 }
 
@@ -208,5 +225,25 @@ template Filter(alias pred, TList...)
             TypeTuple!(
                 Filter!(pred, TList[ 0  .. $/2]),
                 Filter!(pred, TList[$/2 ..  $ ]));
+    }
+}
+
+// std.meta.staticMap
+template staticMap(alias F, T...)
+{
+    static if (T.length == 0)
+    {
+        alias staticMap = TypeTuple!();
+    }
+    else static if (T.length == 1)
+    {
+        alias staticMap = TypeTuple!(F!(T[0]));
+    }
+    else
+    {
+        alias staticMap =
+            TypeTuple!(
+                staticMap!(F, T[ 0  .. $/2]),
+                staticMap!(F, T[$/2 ..  $ ]));
     }
 }
