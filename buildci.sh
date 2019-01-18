@@ -263,26 +263,8 @@ testsuite() {
     make check-gcc RUNTESTFLAGS="help.exp"
     make ${make_flags} check-gcc-d RUNTESTFLAGS="${build_test_flags}"
 
-    # For now, be lenient towards targets with no phobos support,
-    # and ignore unresolved test failures.
-    if [ "${build_supports_phobos}" = "yes" ]; then
-        print_filter="^PASS"
-        fail_filter="^\(FAIL\|UNRESOLVED\)"
-    else
-        print_filter="^\(PASS\|UNRESOLVED\)"
-        fail_filter="^FAIL"
-    fi
-
-    ## Print out summaries of testsuite run after finishing.
-    # Just omit testsuite PASSes from the summary file.
-    grep -v ${print_filter} ${project_dir}/build/gcc/testsuite/gcc/gcc.sum ||:
-    grep -v ${print_filter} ${project_dir}/build/gcc/testsuite/gdc*/gdc.sum ||:
-
-    # Test for any failures and return false if any.
-    if grep -q ${fail_filter} ${project_dir}/build/gcc/testsuite/gdc*/gdc.sum; then
-       echo "== Testsuite has failures =="
-       exit 1
-    fi
+    # For now, be lenient towards any failures, just report on them.
+    summary
 }
 
 unittests() {
@@ -296,6 +278,75 @@ unittests() {
     fi
 }
 
+summary() {
+    ## Processes *.{sum,log} files, producing a summary of all testsuite runs.
+    cd ${project_dir}/build
+    files=`find . -name \*.sum -print | sort`
+    anyfile=false
+
+    for file in $files; do
+        if [ -f $file ]; then
+            anyfile=true
+        fi
+    done
+
+    # Based on GCC testsuite summary scripts.
+    if [ "${anyfile}" = "true" ]; then
+        # We use cat instead of listing the files as arguments to AWK because
+        # GNU awk 3.0.0 would break if any of the filenames contained `=' and
+        # was preceded by an invalid variable name.
+        ( echo @TOPLEVEL_CONFIGURE_ARGUMENTS@ | ./config.status --file=-; cat $files ) |
+        awk '
+        BEGIN {
+            lang=""; configflags = "";
+            version="gcc";
+        }
+        NR == 1 {
+            configflags = $0 " ";
+            srcdir = configflags;
+            sub(/\/configure\047? .*/, "", srcdir);
+            sub(/^\047/, "", srcdir);
+            if ( system("test -f " srcdir "/LAST_UPDATED") == 0 ) {
+                printf "LAST_UPDATED: ";
+                system("tail -1 " srcdir "/LAST_UPDATED");
+                print "";
+            }
+
+            sub(/^[^ ]*\/configure\047? */, " ", configflags);
+            sub(/,;t t $/, " ", configflags);
+            sub(/ --with-gcc-version-trigger=[^ ]* /, " ", configflags);
+            sub(/ --norecursion /, " ", configflags);
+            sub(/ $/, "", configflags);
+            sub(/^ *$/, " none", configflags);
+            configflags = "configure flags:" configflags;
+        }
+        /^Running target / { print; }
+        /^Target / { if (host != "") next; else host = $3; }
+        /^Host / && host ~ /^unix\{.*\}$/ { host = $3 " " substr(host, 5); }
+        /^Native / { if (host != "") next; else host = $4; }
+        /^[     ]*=== [^        ]+ tests ===/ {
+            if (lang == "") lang = " "$2" "; else lang = " ";
+        }
+        $2 == "version" {
+            save = $0; $1 = ""; $2 = ""; version = $0; gsub(/^ */, "", version); gsub(/\r$/, "", version); $0 = save;
+        }
+        /\===.*Summary/ || /tests ===/ { print ""; print; blanks=1; }
+        /^(Target|Host|Native)/ { print; }
+        /^(XPASS|FAIL|UNRESOLVED|WARNING|ERROR|# of )/ { sub ("\r", ""); print; }
+        /^using:/ { print ""; print; print ""; }
+        /^$/ && blanks>0 { print; --blanks; }
+        END {
+            if (lang != "") {
+                print "";
+                print "Compiler version: " prefix version lang;
+                print "Platform: " host;
+                print configflags;
+            }
+        }
+        { next; }
+        ' | sed "s/\([\`\$\\\\]\)/\\\\\\1/g"
+    fi
+}
 
 ## Run a single build task or all at once.
 if [ "$1" != "" ]; then
